@@ -1,0 +1,20 @@
+# Go build output
+/binnacle
+/binnacle.exe
+/out/
+/dist/
+
+# Test + coverage
+*.out
+coverage.*
+
+# Runtime data
+/data/
+
+# IDE
+/.idea/
+/.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
