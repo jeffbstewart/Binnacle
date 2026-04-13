@@ -177,8 +177,11 @@ var recordColumns = []columnSpec{
 	{"instance", func(r Record) any { return r.Instance }},
 	{"version", func(r Record) any { return nullableString(r.Version) }},
 	{"logger", func(r Record) any { return nullableString(r.Logger) }},
-	{"trace_id", func(r Record) any { return nullableBytes(r.TraceID) }},
-	{"span_id", func(r Record) any { return nullableBytes(r.SpanID) }},
+	// TraceID and SpanID implement driver.Valuer, so the SQL driver
+	// receives them directly — no nullableBytes wrapper needed. The
+	// zero values map to SQL NULL via their Value() methods.
+	{"trace_id", func(r Record) any { return r.TraceID }},
+	{"span_id", func(r Record) any { return r.SpanID }},
 	{"message", func(r Record) any { return r.Message }},
 	{"attrs_json", func(r Record) any {
 		return nullableString(mustMarshalAttrs(r.Attrs))
@@ -276,14 +279,6 @@ func nullableString(s string) any {
 		return nil
 	}
 	return s
-}
-
-// nullableBytes turns empty slices into SQL NULL.
-func nullableBytes(b []byte) any {
-	if len(b) == 0 {
-		return nil
-	}
-	return b
 }
 
 // mustMarshalAttrs serializes the attribute map to compact JSON, or

@@ -54,8 +54,8 @@ IP_PRIV="192.168.5""."42
 IP_PUB="54.230.10"".42"
 IP_OTHER="10.0.0"".1"
 IP_OTHER2="10.0.0"".5"
-TEST_UUID="a1b2c3d4-e5f6-7890-abcd-ef12""34567890"
-TEST_HEX="abcdef0123456789abcdef01234567""89ab"
+TEST_UUID="a1b2c3d4-e5f6-7890-abcd-ef12""34567890" # used in a pass test (must NOT trigger)
+TEST_HEX="abcdef0123456789abcdef01234567""89ab"   # used in a pass test (must NOT trigger)
 TEST_APIKEY="sk-abcdefghijklm""nopqrstuvwxyz"
 
 # ---------- tests ----------
@@ -100,15 +100,15 @@ expect_pass "localhost IP allowlisted" \
 expect_pass "any-interface IP allowlisted" \
     '+boot.listenOn = "0.0.0.0"'
 
-# 10. UUID triggers
-expect_fail "UUID" \
-    "+val apiKey = \"$TEST_UUID\"" \
-    "UUID"
+# 10. UUIDs are intentionally not checked here — were auth tokens in
+#     a prior project, carry no special meaning in Binnacle.
+expect_pass "UUID not flagged" \
+    "+val sessionId = \"$TEST_UUID\""
 
-# 11. Long hex string triggers
-expect_fail "long hex string" \
-    "+val hash = \"$TEST_HEX\"" \
-    "Long hex string"
+# 11. Long hex strings are intentionally not checked — collides with
+#     TraceID hex representations which are routine in test fixtures.
+expect_pass "long hex string not flagged" \
+    "+val traceId = \"$TEST_HEX\""
 
 # 13. API key prefix triggers
 expect_fail "sk- API key" \
@@ -127,13 +127,13 @@ expect_pass "removed lines ignored" \
 expect_pass "empty diff" \
     ""
 
-# 17. Multiple violations in one diff
-output=$(printf "+val a = \"$IP_OTHER\"\n+val b = \"$TEST_UUID\"\n" \
+# 17. Multiple violations in one diff — both fire categorically.
+output=$(printf "+val ip = \"$IP_OTHER\"\n+val key = \"$TEST_APIKEY\"\n" \
     | bash "$CHECK" 2>&1 || true)
-if echo "$output" | grep -q "IP address" && echo "$output" | grep -q "UUID"; then
+if echo "$output" | grep -q "IP address" && echo "$output" | grep -q "API key prefix"; then
     passed=$((passed + 1))
 else
-    echo "FAIL: multiple violations — expected both IP and UUID"
+    echo "FAIL: multiple violations — expected both IP address and API key prefix"
     failed=$((failed + 1))
 fi
 

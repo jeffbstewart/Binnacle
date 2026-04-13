@@ -120,16 +120,16 @@ func (s *Severity) UnmarshalJSON(data []byte) error {
 // The user-facing query response type (QueriedRecord) does use
 // time.Time so JSON output is ISO-8601, not a pile of nanoseconds.
 type Record struct {
-	TimeNs    int64      // client-reported timestamp
-	IngestNs  int64      // set on arrival by the collector
-	Severity  Severity   // typed enum
-	Service   string     // service.name from Resource attributes
-	Instance  string     // service.instance.id
-	Version   string     // service.version
-	Logger    string     // InstrumentationScope.name, or code.namespace attr
-	TraceID   []byte     // 16 bytes, or nil
-	SpanID    []byte     // 8 bytes, or nil
-	Message   string     // LogRecord.body rendered as a string
+	TimeNs    int64    // client-reported timestamp
+	IngestNs  int64    // set on arrival by the collector
+	Severity  Severity // typed enum
+	Service   string   // service.name from Resource attributes
+	Instance  string   // service.instance.id
+	Version   string   // service.version
+	Logger    string   // InstrumentationScope.name, or code.namespace attr
+	TraceID   TraceID  // 16 bytes, or nil when unset
+	SpanID    SpanID   // 8 bytes, or nil when unset
+	Message   string   // LogRecord.body rendered as a string
 	Attrs     map[string]any
 	Exception *Exception // non-nil if exception.* attrs were present
 }

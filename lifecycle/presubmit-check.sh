@@ -31,14 +31,16 @@ PAT_COMMIT="DO NOT COM""MIT"
 # IPv4 addresses
 PAT_IP='\b[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b'
 
-# UUIDs (8-4-4-4-12 hex)
-PAT_UUID='\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b'
-
-# Long hex strings (32+ hex chars — likely API keys or hashes)
-PAT_HEX='\b[0-9a-fA-F]{32,}\b'
-
 # Common API key prefixes
 PAT_APIKEY='\b(sk-[a-zA-Z0-9]{20,}|Bearer [a-zA-Z0-9._-]{20,})\b'
+
+# Note on what we intentionally DO NOT check for:
+#   - UUIDs — were sensitive in a prior project (auth tokens) but
+#     carry no special meaning in Binnacle.
+#   - Long hex strings (32+ hex chars) — structurally indistinguishable
+#     from TraceID hex representations (exactly 32 chars), which show
+#     up routinely in tests and docs. The sk-/Bearer prefix check
+#     still catches common accidentally-committed API keys.
 
 # ---------- helpers ----------
 
@@ -182,8 +184,6 @@ fi
 
 check_pattern "Banned marker" "$PAT_SUBMIT|$PAT_COMMIT"
 check_pattern "IP address" "$PAT_IP"
-check_pattern "UUID" "$PAT_UUID"
-check_pattern "Long hex string (possible key/hash)" "$PAT_HEX"
 check_pattern "API key prefix" "$PAT_APIKEY"
 
 # Personal patterns (gitignored, per-developer)
