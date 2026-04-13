@@ -547,22 +547,107 @@ To settle before starting implementation:
 
 ---
 
-## Phase 1 scope (first ~week of work)
+## Implementation Plan
 
-1. Finalize `logging.proto` (adopt OTel's as-is) and vendor it.
-2. Write the Go collector:
-   - OTLP gRPC + HTTP ingest, API key auth on writes.
-   - SQLite schema + daily partition management + retention job.
-   - Query API endpoints listed above.
-   - Server-rendered HTML UI.
-3. Dockerize. Add `logcollector` service to `docker-compose.yml`.
-4. MediaManager integration: add OTel Java SDK, bridge SLF4J, point at
-   the collector. Keep `AppLogBuffer` in parallel.
-5. Document in `docs/ADMIN_GUIDE.md` how to query from the browser and
-   via `curl`.
+Every phase lands as a shippable improvement — the system is more
+useful after each one, not only after the last.
 
-Phases 2 and 3 (clients for Android TV, iOS, Roku; correlation ID
-propagation; retention tuning) follow once the server side is stable.
+Suggested execution order: **1 → 3 → 2 → 4 → 5 → 6**. Going straight
+from basic ingest to integrating MediaManager validates the data
+model with real traffic before committing to the full UI and server
+feature set.
+
+### Phase 1 — Minimum viable pipeline
+
+One log record can flow end-to-end: `curl` posts an OTLP batch,
+Binnacle stores it in SQLite, another `curl` queries it back.
+
+- Vendor OpenTelemetry proto definitions; generate Go bindings.
+- SQLite layer using **`modernc.org/sqlite`** (pure Go — keeps the
+  distroless base image). Validate FTS5 support early; if the pure-Go
+  driver lacks it, fall back to `LIKE`-based search until Phase 2.
+- **Flyway-style schema migration framework**. Numbered SQL files
+  under `internal/store/migrations/V{NNN}__{description}.sql`,
+  embedded in the binary via `go:embed`, applied in order on startup,
+  tracked in a `schema_migrations` table. Required so we can evolve
+  the control-plane schema (metadata tables, future write-key tables,
+  etc.) without manual DB surgery across deployments. Daily partition
+  tables (`logs_YYYY_MM_DD`) are created dynamically by the writer
+  and NOT managed by migrations — their shape lives in code.
+- Write path: OTLP HTTP at `POST /v1/logs` with API key validation.
+  One background goroutine owns all SQLite writes (fed by a bounded
+  channel) to avoid writer contention.
+- Read path: `GET /api/logs/query` with basic filters (service,
+  severity, since, limit) and stable cursor pagination.
+- Retention loop: hourly `DROP TABLE` on partitions older than
+  `--retention-days`.
+
+**Done when:** `curl -X POST .../v1/logs` writes, `curl .../api/logs/query`
+reads it back, and retention reliably drops yesterday's partition.
+
+### Phase 2 — Server feature-complete
+
+Every endpoint from the design doc works. Browser UI lets you eyeball
+incoming logs. Prometheus can scrape Binnacle's own health.
+
+- OTLP gRPC ingest on 4317 feeding the same writer goroutine.
+- Remaining query endpoints: `/schema`, `/summary`, `/errors`,
+  `/correlation/{id}`, `/tail` (Server-Sent Events), `/stats`.
+- HTML UI served from the same binary (`html/template` + vanilla JS).
+- Prometheus metrics on `/metrics`: ingest rate, rejected-auth count,
+  SQLite write latency, partition sizes, client queue depth.
+- Safety rails from the security audit: 64 KB per-record cap, 4 MB
+  per-batch cap, ANSI-escape stripping at ingest.
+
+### Phase 3 — First real client (MediaManager)
+
+MediaManager's production logs flow to Binnacle; `AppLogBuffer`
+becomes redundant.
+
+- Add `opentelemetry-java` SDK + OTLP exporter to MediaManager.
+- Bridge SLF4J → OTel (logback appender or equivalent).
+- Central redaction config for URLs with `?key=`, `Authorization`
+  headers, anything matching the existing `UriCredentialRedactor`.
+- Run in parallel with `AppLogBuffer` for one full retention period
+  (7 days), then delete `AppLogBuffer`, `RequestLogBuffer`, and the
+  `/admin/logs` + `/admin/requests` endpoints.
+
+### Phase 4 — Remaining clients
+
+Every app in the ecosystem logs to Binnacle, in order of difficulty:
+
+1. **transcode-buddy** — same JVM + OTel SDK as MediaManager.
+2. **iOS app** — `opentelemetry-swift` with OTLP HTTP exporter.
+3. **Android TV** — `opentelemetry-kotlin-android` with OTLP gRPC.
+4. **Roku BrightScript** — custom client (~200 LOC) batching JSON
+   POSTs to `/v1/logs`. Local ring buffer for flaky networks.
+
+### Phase 5 — Correlation IDs and security hardening
+
+One log line from the Roku can be walked back through the full
+request chain. Write-path keys move to per-service with attribution.
+
+- W3C `traceparent` propagation on HTTP; gRPC metadata trace-id on
+  Armeria. Server-generated `trace_id` when clients don't supply one.
+- Per-service write keys in a `write_keys` table (added via a new
+  migration). Collector reloads on SIGHUP.
+- Attribution pin: collector overrides `service.name` on ingested
+  records to match the authenticating key. A compromised iOS key
+  cannot forge records claiming to be MediaManager.
+- Per-key rate limiting (token bucket, 10 k records/minute).
+- Wire the `--require-read-auth` toggle from security audit A1 (off
+  by default).
+
+### Phase 6 — Ops polish
+
+- `govulncheck` in CI; block merges on HIGH+ Go CVEs.
+- Daily cold-archive of old partitions to compressed files.
+- Pre-computed hourly summary rollups so `/summary` is O(hours)
+  instead of O(records).
+- Simple alerting: webhook on ERROR rate threshold.
+- Backup script: SQLite online backup → file on NAS share → daily
+  cron.
+- UI polish: attribute-key autocomplete, saved filter presets.
 
 ---
 

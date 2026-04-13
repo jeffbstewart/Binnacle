@@ -21,6 +21,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/jeffbstewart/Binnacle/internal/store"
 )
 
 // version is set at build time via -ldflags "-X main.version=...".
@@ -113,9 +115,22 @@ func main() {
 		syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// Open the SQLite store: creates the data directory if missing,
+	// enables WAL mode, and applies any pending schema migrations.
+	db, err := store.Open(cfg.dataDir)
+	if err != nil {
+		slog.Error("open store failed", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			slog.Error("store close error", "error", err)
+		}
+	}()
+
 	// TODO(phase1): start OTLP gRPC ingest on cfg.otlpGRPCPort.
 	// TODO(phase1): start OTLP HTTP ingest on cfg.otlpHTTPPort.
-	// TODO(phase1): open SQLite, manage daily partitions, run retention loop.
+	// TODO(phase1): writer goroutine + daily partition management + retention loop.
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/logs/health", healthHandler)
