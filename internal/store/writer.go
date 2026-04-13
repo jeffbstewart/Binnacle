@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -58,10 +59,14 @@ type Writer struct {
 
 	done chan struct{}
 
-	submitted uint64
-	dropped   uint64
-	tooOld    uint64
-	written   uint64
+	// Stats counters are atomic.Uint64 so Stats() can be read from
+	// any goroutine while Run() is mutating them. The race detector
+	// correctly catches plain uint64 sharing even when x86 would
+	// tolerate it in practice.
+	submitted atomic.Uint64
+	dropped   atomic.Uint64
+	tooOld    atomic.Uint64
+	written   atomic.Uint64
 }
 
 // NewWriter constructs a Writer bound to db with a queue of queueSize
@@ -96,10 +101,10 @@ var ErrRecordTooOld = errors.New("record timestamp older than MaxRecordAge")
 //   - ErrQueueFull     — writer is backed up. Caller should drop.
 //   - nil              — record is queued for eventual write.
 func (w *Writer) Submit(r Record) error {
-	w.submitted++
+	w.submitted.Add(1)
 
 	if time.Since(time.Unix(0, r.TimeNs)) > MaxRecordAge {
-		w.tooOld++
+		w.tooOld.Add(1)
 		return ErrRecordTooOld
 	}
 
@@ -107,7 +112,7 @@ func (w *Writer) Submit(r Record) error {
 	case w.queue <- r:
 		return nil
 	default:
-		w.dropped++
+		w.dropped.Add(1)
 		return ErrQueueFull
 	}
 }
@@ -145,14 +150,15 @@ type WriterStats struct {
 	QueueLen  int
 }
 
-// Stats returns the current counter snapshot.
+// Stats returns the current counter snapshot. Safe to call from any
+// goroutine while Run is draining.
 func (w *Writer) Stats() WriterStats {
 	return WriterStats{
-		Submitted: w.submitted,
-		Dropped:   w.dropped,
-		TooOld:    w.tooOld,
-		Written:   w.written,
-		QueueLen:  len(w.queue),
+		Submitted: w.submitted.Load(),
+		Dropped:   w.dropped.Load(),
+		TooOld:    w.tooOld.Load(),
+		Written:   w.written.Load(),
+		QueueLen:  len(w.queue), // len(chan) is race-free per spec
 	}
 }
 
@@ -249,7 +255,7 @@ func (w *Writer) writeOne(r Record) {
 		time.Now().Unix(), dayKey(t),
 	)
 
-	w.written++
+	w.written.Add(1)
 }
 
 // ensureDay short-circuits on the cache hit, only calling
