@@ -280,15 +280,18 @@ func TestQuery_CrossesMultiplePartitions(t *testing.T) {
 	// partition tables and merge their results.
 	db, w := openWithWriter(t)
 
-	// Pick two points that are near each other (both within
-	// MaxRecordAge) but straddle UTC midnight. Using "a few hours
-	// either side of midnight" is safe assuming the test doesn't run
-	// at exactly midnight UTC.
+	// Straddle the NEXT UTC midnight rather than the most recent
+	// one. The most recent midnight can be up to 24 hours in the
+	// past, so "30 min before it" can be just over MaxRecordAge,
+	// making the test wall-clock-flaky near UTC midnight. The NEXT
+	// midnight is at most 24h in the future; "1h before" is at most
+	// 23h in the future, "1h after" is at most 25h in the future —
+	// both comfortably accepted by Submit, both on different UTC
+	// calendar days.
 	now := time.Now().UTC()
-	// Find a midnight-ish pivot within the last day.
-	pivot := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	before := pivot.Add(-30 * time.Minute) // previous UTC day
-	after := pivot.Add(30 * time.Minute)   // current UTC day
+	nextMidnight := now.Truncate(24 * time.Hour).Add(24 * time.Hour)
+	before := nextMidnight.Add(-1 * time.Hour)
+	after := nextMidnight.Add(1 * time.Hour)
 
 	submit(t, w, Record{
 		TimeNs: before.UnixNano(), IngestNs: time.Now().UnixNano(),
