@@ -11,6 +11,20 @@ coverage.*
 # Runtime data
 /data/
 
+# Deployment secrets (only the example.deploy.env template is tracked)
+secrets/*.agent_visible_env
+secrets/.env
+secrets/*.env
+!secrets/example.deploy.env
+
+# Local Compose override — holds private registry references and any
+# per-host tweaks that should not be committed. Only the example is tracked.
+docker-compose.override.yml
+
+# Personal presubmit patterns (per-developer, gitignored). Example
+# template at lifecycle/presubmit-personal-patterns.example.
+lifecycle/presubmit-personal-patterns.txt
+
 # IDE
 /.idea/
 /.vscode/

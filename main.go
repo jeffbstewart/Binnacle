@@ -13,6 +13,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -33,6 +34,7 @@ type config struct {
 	queryPort     int
 	logLevel      string
 	apiKeyEnv     string
+	healthcheck   bool
 }
 
 func parseFlags() (config, error) {
@@ -47,6 +49,8 @@ func parseFlags() (config, error) {
 	fs.StringVar(&c.logLevel, "log-level", "info", "log level: debug, info, warn, error")
 	fs.StringVar(&c.apiKeyEnv, "api-key-env", "LOGGING_API_KEY",
 		"name of the env var holding the shared write-path API key")
+	fs.BoolVar(&c.healthcheck, "healthcheck", false,
+		"probe the local /api/logs/health endpoint and exit 0 (ok) or 1 (fail); used as the Docker HEALTHCHECK")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return c, err
@@ -80,6 +84,12 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(2)
+	}
+
+	// --healthcheck short-circuits to a probe of the locally-bound query
+	// port and exits. Docker HEALTHCHECK calls this.
+	if cfg.healthcheck {
+		os.Exit(runHealthcheck(cfg.queryPort))
 	}
 
 	logger := newLogger(cfg.logLevel)
@@ -145,4 +155,28 @@ func healthHandler(w http.ResponseWriter, _ *http.Request) {
 		"status":  "ok",
 		"version": version,
 	})
+}
+
+// runHealthcheck probes /api/logs/health on localhost and returns a
+// POSIX-style exit code. The binary invokes itself this way via the
+// Dockerfile HEALTHCHECK directive.
+//
+// It intentionally uses 127.0.0.1 instead of localhost so it doesn't
+// depend on /etc/hosts — distroless doesn't ship one by default.
+func runHealthcheck(port int) int {
+	url := fmt.Sprintf("http://127.0.0.1:%d/api/logs/health", port)
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "healthcheck failed:", err)
+		return 1
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "healthcheck HTTP %d: %s\n", resp.StatusCode, string(body))
+		return 1
+	}
+	_, _ = os.Stdout.Write(body)
+	return 0
 }

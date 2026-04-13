@@ -1,0 +1,19 @@
+# Example docker-compose.override.yml — NOT tracked in git.
+#
+# Docker Compose automatically merges docker-compose.override.yml into
+# docker-compose.yml when both are present. Use this file to point at a
+# private registry on your LAN without exposing that address in the
+# checked-in compose file.
+#
+# To use:
+#   cp docker-compose.override.example.yml docker-compose.override.yml
+#   # then edit for your environment
+#   docker compose up -d
+#
+# The override file is listed in .gitignore so it cannot be committed
+# accidentally.
+
+services:
+  binnacle:
+    # Private LAN registry — replace with your own registry host:port.
+    image: your-registry.local:5000/binnacle:latest

@@ -28,5 +28,12 @@ COPY --from=builder /out/binnacle /usr/local/bin/binnacle
 
 EXPOSE 4317 4318 8088
 
+# The binary can health-check itself — saves bundling curl or wget into
+# the distroless image. `binnacle --healthcheck` GETs /api/logs/health on
+# the query port and exits 0/1. Both are in exec form because distroless
+# has no shell.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD ["/usr/local/bin/binnacle", "--healthcheck"]
+
 ENTRYPOINT ["/usr/local/bin/binnacle"]
 CMD ["--data-dir=/data", "--log-level=info"]

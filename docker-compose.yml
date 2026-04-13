@@ -1,0 +1,78 @@
+services:
+  binnacle:
+    # Default to the GHCR image built by .github/workflows/docker.yml. If you
+    # run a private registry on your LAN (recommended), drop a
+    # docker-compose.override.yml next to this file to swap the image
+    # reference — see docker-compose.override.example.yml for the pattern.
+    image: ghcr.io/jeffbstewart/binnacle:latest
+    container_name: binnacle
+    restart: unless-stopped
+
+    # ── User ID ──────────────────────────────────────────────────────
+    # Distroless runs as UID 65532 by default, but that UID won't own
+    # anything on the Synology NAS. Override to a user that has read/
+    # write on the data volume below.
+    #   Synology: SSH in and run `id -u <username>` / `id -g <username>`
+    user: "1046:100"
+
+    # ── Memory ───────────────────────────────────────────────────────
+    # Go + SQLite; plenty of headroom at 256m for current workloads.
+    mem_limit: 256m
+    memswap_limit: 256m
+
+    # ── Networking ───────────────────────────────────────────────────
+    # Bridge networking, LAN only. None of these ports should be
+    # forwarded through the router.
+    #   4317: OTLP gRPC ingest  (clients with gRPC — JVM, iOS, Android, Go, Rust)
+    #   4318: OTLP HTTP ingest  (Roku)
+    #   8088: Query API + HTML UI
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8088:8088"
+
+    # ── Volumes ──────────────────────────────────────────────────────
+    # Named volume declared at the bottom of this file. Docker creates
+    # and manages it; survives container recreation. If you'd rather
+    # bind-mount to a specific host path (e.g. so NAS snapshots catch
+    # it), replace the line below with:
+    #   - /volume1/docker/binnacle/data:/data
+    volumes:
+      - binnacle-data:/data
+
+    # ── Environment ──────────────────────────────────────────────────
+    # LOGGING_API_KEY: Required on the write path. Every client must send
+    #                  it as the x-logging-api-key header when ingesting.
+    #                  Generate with `openssl rand -hex 32`.
+    # TZ:              IANA timezone for log timestamps in the UI.
+    environment:
+      - LOGGING_API_KEY=change_me_to_a_random_64_char_hex_string
+      - TZ=America/New_York
+
+    # ── Command overrides ────────────────────────────────────────────
+    # All flags default sensibly. Override here to tune retention or log
+    # level without rebuilding the image.
+    # command:
+    #   - --retention-days=7
+    #   - --log-level=info
+
+    # ── Health Check ─────────────────────────────────────────────────
+    # The Dockerfile already defines a HEALTHCHECK that calls
+    # `binnacle --healthcheck` (self-probe of /api/logs/health). Docker
+    # Compose inherits it automatically. Uncomment the stanza below only
+    # if you want to tune the timing on this host without rebuilding
+    # the image.
+    # healthcheck:
+    #   test: ["CMD", "/usr/local/bin/binnacle", "--healthcheck"]
+    #   interval: 30s
+    #   timeout: 3s
+    #   start_period: 10s
+    #   retries: 3
+
+# Top-level volumes block — declares the named volumes referenced by
+# services above. Docker creates these on `docker compose up` if they
+# don't already exist.
+volumes:
+  binnacle-data:
+    # Default driver (local) is fine. Docker stores the data under its
+    # data-root (on Synology, typically /volume1/@docker/volumes/...).
