@@ -1,0 +1,30 @@
+# Normalize line endings: LF in repo, LF on checkout everywhere.
+# Without this, Windows clones would rewrite shell scripts and the
+# Dockerfile into CRLF, which then fails when Docker or Linux tries
+# to execute them.
+
+* text=auto eol=lf
+
+# Source code
+*.go text eol=lf
+
+# Scripts
+*.sh text eol=lf
+Dockerfile text eol=lf
+Dockerfile.* text eol=lf
+
+# Config / markup
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.env text eol=lf
+*.mod text eol=lf
+*.sum text eol=lf
+
+# Binary — no conversion
+*.png binary
+*.jpg binary
+*.gz binary
+*.zip binary
