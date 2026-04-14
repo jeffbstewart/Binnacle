@@ -1,10 +1,18 @@
 // Binnacle is a unified log collection, storage, and query service for a
 // home NAS. See README.md for the design proposal.
 //
-// This is the current scaffold: CLI flag parsing, structured logging,
-// graceful shutdown on SIGINT/SIGTERM, and a health endpoint. OTLP ingest,
-// SQLite storage, and the query API are TODOs slotted in where they'll
-// eventually land.
+// main.go wires the three long-lived pieces together:
+//
+//   - store.Writer, the single goroutine that drains the ingest queue
+//     into SQLite (plus the schema migrator + daily partition cache
+//     sitting behind it).
+//   - ingest.OTLPHandler, mounted behind ingest.RequireAPIKey on the
+//     OTLP-HTTP port so OpenTelemetry SDKs can POST batches.
+//   - api.QueryHandler, mounted on the query port alongside a health
+//     endpoint so agents and humans can read back what was written.
+//
+// OTLP-gRPC (port 4317) is reserved but unbound in Phase 1; it lands
+// in Phase 2.
 package main
 
 import (
@@ -19,9 +27,12 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/jeffbstewart/Binnacle/internal/api"
+	"github.com/jeffbstewart/Binnacle/internal/ingest"
 	"github.com/jeffbstewart/Binnacle/internal/store"
 )
 
@@ -111,9 +122,13 @@ func main() {
 		"otlp_http_port", cfg.otlpHTTPPort,
 		"query_port", cfg.queryPort)
 
-	ctx, cancel := signal.NotifyContext(context.Background(),
+	// sigCtx fires on SIGINT/SIGTERM. It is the trigger for shutdown,
+	// not the writer's lifetime — we want the writer to stay alive a
+	// little longer than the HTTP servers so any in-flight request
+	// that already got past Submit() can finish persisting.
+	sigCtx, stopSignals := signal.NotifyContext(context.Background(),
 		syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
+	defer stopSignals()
 
 	// Open the SQLite store: creates the data directory if missing,
 	// enables WAL mode, and applies any pending schema migrations.
@@ -128,40 +143,119 @@ func main() {
 		}
 	}()
 
-	// TODO(phase1): start OTLP gRPC ingest on cfg.otlpGRPCPort.
-	// TODO(phase1): start OTLP HTTP ingest on cfg.otlpHTTPPort.
-	// TODO(phase1): writer goroutine + daily partition management + retention loop.
+	// Writer has its own context so shutdown can order explicitly:
+	// (1) stop accepting new HTTP requests,
+	// (2) cancel writerCtx and wait for the queue to drain,
+	// (3) close the DB.
+	writerCtx, stopWriter := context.WithCancel(context.Background())
+	writer := store.NewWriter(db, 1024)
+	go writer.Run(writerCtx)
 
+	otlp := &ingest.OTLPHandler{Writer: writer, Converter: ingest.NewConverter()}
+	query := &api.QueryHandler{DB: db}
+
+	ingestSrv := buildIngestServer(cfg.otlpHTTPPort, apiKey, otlp)
+	querySrv := buildQueryServer(cfg.queryPort, query)
+
+	// If either server fails to bind (port in use, permission denied)
+	// we want the whole process to exit, not limp along half-serving.
+	// fatalErr is closed in that case; main treats it the same as a
+	// signal.
+	fatalErr := make(chan struct{})
+	var fatalOnce sync.Once
+	fatal := func() { fatalOnce.Do(func() { close(fatalErr) }) }
+
+	go runServer(ingestSrv, "ingest", fatal)
+	go runServer(querySrv, "query", fatal)
+
+	select {
+	case <-sigCtx.Done():
+		slog.Info("shutdown signal received, stopping")
+	case <-fatalErr:
+		slog.Error("fatal server error, stopping")
+	}
+
+	// Stage 1: refuse new HTTP requests. Shutdown returns once in-flight
+	// handlers return, which for ingest includes the Submit() call — so
+	// anything that was going to land in the queue is already there.
+	shutdownHTTPServers(ingestSrv, querySrv)
+
+	// Stage 2: tell the writer to drain and wait for it. Run() exits
+	// its select on ctx.Done, then drains any queued records before
+	// closing Done().
+	stopWriter()
+	<-writer.Done()
+	s := writer.Stats()
+	slog.Info("writer drained",
+		"submitted", s.Submitted,
+		"written", s.Written,
+		"dropped", s.Dropped,
+		"too_old", s.TooOld,
+		"queue_len", s.QueueLen)
+
+	// Stage 3: defer runs db.Close() on return.
+	slog.Info("binnacle stopped")
+}
+
+// buildIngestServer mounts the OTLP HTTP handler at OTLPPath behind
+// the shared-key middleware. Non-OTLP paths get 404.
+func buildIngestServer(port int, apiKey string, otlp http.Handler) *http.Server {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/logs/health", healthHandler)
-
-	// TODO(phase1): mount /api/logs/schema, /summary, /errors, /correlation/{id},
-	//               /query, /tail, /stats, and the HTML UI on this mux.
-
-	srv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", cfg.queryPort),
+	mux.Handle("POST "+ingest.OTLPPath, ingest.RequireAPIKey(apiKey, otlp))
+	return &http.Server{
+		Addr:              fmt.Sprintf(":%d", port),
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+}
 
-	go func() {
-		slog.Info("query server listening", "addr", srv.Addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("query server failed", "error", err)
-			cancel()
-		}
-	}()
+// buildQueryServer mounts the health check and the structured-query
+// handler. No auth — the read path is LAN-only by design.
+func buildQueryServer(port int, query http.Handler) *http.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/logs/health", healthHandler)
+	mux.Handle("GET "+api.QueryPath, query)
 
-	<-ctx.Done()
-	slog.Info("shutdown signal received, stopping")
+	// TODO(phase2): mount /api/logs/schema, /summary, /errors,
+	//               /correlation/{id}, /tail, /stats, and the HTML UI.
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutdownCancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		slog.Error("query server shutdown error", "error", err)
+	return &http.Server{
+		Addr:              fmt.Sprintf(":%d", port),
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
+}
 
-	slog.Info("binnacle stopped")
+// runServer blocks on srv.ListenAndServe and calls fatal on any error
+// other than the "server was asked to shut down" sentinel. name is
+// only used for logging.
+func runServer(srv *http.Server, name string, fatal func()) {
+	slog.Info(name+" server listening", "addr", srv.Addr)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		slog.Error(name+" server failed", "error", err)
+		fatal()
+	}
+}
+
+// shutdownHTTPServers calls Shutdown on both servers in parallel with
+// a shared 10s budget. Errors are logged but don't stop us from
+// moving on to the writer drain — a stuck HTTP handler is not a
+// reason to lose unwritten records.
+func shutdownHTTPServers(servers ...*http.Server) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	for _, srv := range servers {
+		wg.Add(1)
+		go func(s *http.Server) {
+			defer wg.Done()
+			if err := s.Shutdown(ctx); err != nil {
+				slog.Error("http server shutdown error", "addr", s.Addr, "error", err)
+			}
+		}(srv)
+	}
+	wg.Wait()
 }
 
 func healthHandler(w http.ResponseWriter, _ *http.Request) {
