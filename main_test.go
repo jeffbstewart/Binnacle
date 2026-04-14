@@ -24,13 +24,18 @@ import (
 	"github.com/jeffbstewart/Binnacle/internal/store"
 )
 
-// TestHealthHandler verifies the shape and content of the /api/logs/health
-// response. Both humans and Docker's HEALTHCHECK depend on this being
-// JSON with a "status" field.
-func TestHealthHandler(t *testing.T) {
-	// Build the same mux main() builds so the route matching is exercised too.
+// TestHealthHandler_OK verifies the shape when the DB ping succeeds.
+// Passes a real store so the handler exercises its actual PingContext
+// path rather than the nil-db shortcut.
+func TestHealthHandler_OK(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/logs/health", healthHandler)
+	mux.HandleFunc("GET /api/logs/health", makeHealthHandler(db))
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -60,10 +65,53 @@ func TestHealthHandler(t *testing.T) {
 	}
 }
 
+// TestHealthHandler_DBUnreachable guards against the class of bug the
+// user hit in prod: SQLite can't open the file (wrong volume perms,
+// disk full, corrupted WAL), but the health endpoint still returns
+// 200 because it never checked. The endpoint must return 503 with a
+// diagnostic body so Docker's HEALTHCHECK flips the container to
+// unhealthy.
+func TestHealthHandler_DBUnreachable(t *testing.T) {
+	// Open a store, then close it: every subsequent ping returns
+	// "sql: database is closed" — a reliable way to simulate an
+	// unreachable DB without touching the file system.
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	_ = db.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(makeHealthHandler(db)))
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", resp.StatusCode)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["status"] != "db_unreachable" {
+		t.Errorf("status: got %q, want db_unreachable", body["status"])
+	}
+	if body["error"] == "" {
+		t.Errorf("missing error field; body=%v", body)
+	}
+}
+
 // TestRunHealthcheck_Ok verifies that a 200 OK response from the
 // target endpoint produces exit code 0.
 func TestRunHealthcheck_Ok(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(healthHandler))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
 	t.Cleanup(srv.Close)
 
 	port := testServerPort(t, srv)
@@ -159,7 +207,7 @@ func newE2ERig(t *testing.T, apiKey string) *e2eRig {
 	query := &api.QueryHandler{DB: db}
 	metrics := &api.MetricsHandler{DB: db, Writer: writer, Ingest: otlp, Version: "e2e-test"}
 	ingestSrv := httptest.NewServer(buildIngestServer(0, apiKey, otlp).Handler)
-	querySrv := httptest.NewServer(buildQueryServer(0, query, metrics).Handler)
+	querySrv := httptest.NewServer(buildQueryServer(0, db, query, metrics).Handler)
 	t.Cleanup(ingestSrv.Close)
 	t.Cleanup(querySrv.Close)
 

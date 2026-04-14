@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -156,7 +157,7 @@ func main() {
 	metrics := &api.MetricsHandler{DB: db, Writer: writer, Ingest: otlp, Version: version}
 
 	ingestSrv := buildIngestServer(cfg.otlpHTTPPort, apiKey, otlp)
-	querySrv := buildQueryServer(cfg.queryPort, query, metrics)
+	querySrv := buildQueryServer(cfg.queryPort, db, query, metrics)
 
 	// If either server fails to bind (port in use, permission denied)
 	// we want the whole process to exit, not limp along half-serving.
@@ -213,9 +214,13 @@ func buildIngestServer(port int, apiKey string, otlp http.Handler) *http.Server 
 // buildQueryServer mounts the health check, the structured-query
 // handler, and the Prometheus metrics endpoint. No auth — the read
 // path is LAN-only by design.
-func buildQueryServer(port int, query, metrics http.Handler) *http.Server {
+//
+// db is the handle the health endpoint pings; passing nil yields a
+// handler that always returns 200 (used by a handful of tests that
+// don't care about DB state).
+func buildQueryServer(port int, db *sql.DB, query, metrics http.Handler) *http.Server {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/logs/health", healthHandler)
+	mux.HandleFunc("GET /api/logs/health", makeHealthHandler(db))
 	mux.Handle("GET "+api.QueryPath, query)
 	mux.Handle("GET "+api.MetricsPath, metrics)
 
@@ -261,12 +266,39 @@ func shutdownHTTPServers(servers ...*http.Server) {
 	wg.Wait()
 }
 
-func healthHandler(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{
-		"status":  "ok",
-		"version": version,
-	})
+// makeHealthHandler returns a /api/logs/health handler that reports
+// 200 only when the DB is reachable, 503 otherwise. Docker's
+// HEALTHCHECK uses this indirectly via `binnacle --healthcheck`; a
+// broken store (missing volume permissions, disk-full, corrupted
+// WAL) must surface as an unhealthy container, not a silent green
+// light.
+//
+// Passing a nil db skips the ping and always returns 200 — kept for
+// tests that exercise mux wiring without needing a real store.
+func makeHealthHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]string{
+			"status":  "ok",
+			"version": version,
+		}
+		status := http.StatusOK
+
+		if db != nil {
+			// Short context so a wedged DB doesn't tie up the
+			// HEALTHCHECK process past Docker's timeout budget.
+			ctx, cancel := context.WithTimeout(r.Context(), 1*time.Second)
+			defer cancel()
+			if err := db.PingContext(ctx); err != nil {
+				resp["status"] = "db_unreachable"
+				resp["error"] = err.Error()
+				status = http.StatusServiceUnavailable
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(resp)
+	}
 }
 
 // runHealthcheck probes /api/logs/health on localhost and returns a

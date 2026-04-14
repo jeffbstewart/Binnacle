@@ -19,12 +19,28 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
       -o /out/binnacle \
       .
 
+# Seed an empty /data directory that the runtime stage will COPY with
+# an explicit ownership (1046:100). When Docker mounts an empty named
+# volume at /data on first use, the volume inherits ownership from
+# this mount point — so the process UID defined below can actually
+# write the SQLite database. Without this step the volume is root-
+# owned and the process exits with SQLITE_CANTOPEN.
+RUN mkdir -p /out/data
+
 # ---------- runtime stage ----------
-# distroless/static: smallest possible runtime with CA certs and tzdata,
-# runs as an unprivileged user by default.
-FROM gcr.io/distroless/static-debian12:nonroot
+# distroless/static: smallest possible runtime with CA certs and tzdata.
+# We don't use the :nonroot tag because we need a Synology-matching
+# UID (1046:100), which we set explicitly via USER below — UIDs do not
+# need to exist in /etc/passwd for Linux to honor them.
+FROM gcr.io/distroless/static-debian12
 
 COPY --from=builder /out/binnacle /usr/local/bin/binnacle
+COPY --from=builder --chown=1046:100 /out/data /data
+
+# 1046:100 matches the `app:users` user MediaManager creates in its
+# own image — keeping the two services aligned means the same Synology
+# user owns logs from both writers when volumes are bind-mounted.
+USER 1046:100
 
 EXPOSE 4317 4318 8088
 

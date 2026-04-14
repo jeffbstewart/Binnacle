@@ -9,10 +9,12 @@ services:
     restart: unless-stopped
 
     # ── User ID ──────────────────────────────────────────────────────
-    # Distroless runs as UID 65532 by default, but that UID won't own
-    # anything on the Synology NAS. Override to a user that has read/
-    # write on the data volume below.
-    #   Synology: SSH in and run `id -u <username>` / `id -g <username>`
+    # The image already bakes in USER 1046:100 (matches MediaManager's
+    # app:users user) and chowns /data accordingly, so this override
+    # is documentation, not a functional requirement. If you redeploy
+    # to a NAS with a different user layout, override here and delete
+    # the `binnacle-data` volume so it re-inherits ownership from the
+    # next first-mount.
     user: "1046:100"
 
     # ── Memory ───────────────────────────────────────────────────────
