@@ -13,7 +13,7 @@ services:
     # app:users user) and chowns /data accordingly, so this override
     # is documentation, not a functional requirement. If you redeploy
     # to a NAS with a different user layout, override here and delete
-    # the `binnacle-data` volume so it re-inherits ownership from the
+    # the `binnacle-data-v2` volume so it re-inherits ownership from the
     # next first-mount.
     user: "1046:100"
 
@@ -40,7 +40,7 @@ services:
     # it), replace the line below with:
     #   - /volume1/docker/binnacle/data:/data
     volumes:
-      - binnacle-data:/data
+      - binnacle-data-v2:/data
 
     # ── Environment ──────────────────────────────────────────────────
     # LOGGING_API_KEY: Required on the write path. Every client must send
@@ -75,6 +75,12 @@ services:
 # services above. Docker creates these on `docker compose up` if they
 # don't already exist.
 volumes:
-  binnacle-data:
+  # `-v2` suffix because v1 (`binnacle-data`) was created root-owned by
+  # the initial deploy before the Dockerfile pre-created /data with
+  # UID 1046:100. Docker doesn't re-inherit ownership on subsequent
+  # mounts of a non-empty volume, so we renamed to force a fresh one.
+  # The old volume can be safely `docker volume rm binnacle-data`'d
+  # whenever convenient.
+  binnacle-data-v2:
     # Default driver (local) is fine. Docker stores the data under its
     # data-root (on Synology, typically /volume1/@docker/volumes/...).
