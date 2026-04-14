@@ -153,9 +153,10 @@ func main() {
 
 	otlp := &ingest.OTLPHandler{Writer: writer, Converter: ingest.NewConverter()}
 	query := &api.QueryHandler{DB: db}
+	metrics := &api.MetricsHandler{DB: db, Writer: writer, Ingest: otlp, Version: version}
 
 	ingestSrv := buildIngestServer(cfg.otlpHTTPPort, apiKey, otlp)
-	querySrv := buildQueryServer(cfg.queryPort, query)
+	querySrv := buildQueryServer(cfg.queryPort, query, metrics)
 
 	// If either server fails to bind (port in use, permission denied)
 	// we want the whole process to exit, not limp along half-serving.
@@ -209,12 +210,14 @@ func buildIngestServer(port int, apiKey string, otlp http.Handler) *http.Server 
 	}
 }
 
-// buildQueryServer mounts the health check and the structured-query
-// handler. No auth — the read path is LAN-only by design.
-func buildQueryServer(port int, query http.Handler) *http.Server {
+// buildQueryServer mounts the health check, the structured-query
+// handler, and the Prometheus metrics endpoint. No auth — the read
+// path is LAN-only by design.
+func buildQueryServer(port int, query, metrics http.Handler) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/logs/health", healthHandler)
 	mux.Handle("GET "+api.QueryPath, query)
+	mux.Handle("GET "+api.MetricsPath, metrics)
 
 	// TODO(phase2): mount /api/logs/schema, /summary, /errors,
 	//               /correlation/{id}, /tail, /stats, and the HTML UI.

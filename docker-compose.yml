@@ -25,7 +25,7 @@ services:
     # forwarded through the router.
     #   4317: OTLP gRPC ingest  (clients with gRPC — JVM, iOS, Android, Go, Rust)
     #   4318: OTLP HTTP ingest  (Roku)
-    #   8088: Query API + HTML UI
+    #   8088: Query API + HTML UI + Prometheus /metrics scrape endpoint
     ports:
       - "4317:4317"
       - "4318:4318"

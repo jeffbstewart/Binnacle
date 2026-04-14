@@ -157,8 +157,9 @@ func newE2ERig(t *testing.T, apiKey string) *e2eRig {
 	// supplies its own listener and only the Handler field is read.
 	otlp := &ingest.OTLPHandler{Writer: writer, Converter: ingest.NewConverter()}
 	query := &api.QueryHandler{DB: db}
+	metrics := &api.MetricsHandler{DB: db, Writer: writer, Ingest: otlp, Version: "e2e-test"}
 	ingestSrv := httptest.NewServer(buildIngestServer(0, apiKey, otlp).Handler)
-	querySrv := httptest.NewServer(buildQueryServer(0, query).Handler)
+	querySrv := httptest.NewServer(buildQueryServer(0, query, metrics).Handler)
 	t.Cleanup(ingestSrv.Close)
 	t.Cleanup(querySrv.Close)
 
@@ -378,5 +379,50 @@ func TestEndToEnd_HealthEndpoint(t *testing.T) {
 	}
 	if body["status"] != "ok" {
 		t.Errorf("status field: got %q, want ok", body["status"])
+	}
+}
+
+// TestEndToEnd_MetricsReflectsIngest proves that after an OTLP POST
+// succeeds, the Prometheus scrape shows the accept counter ticked.
+// Covers two wiring risks: (1) buildQueryServer mounts /metrics,
+// (2) MetricsHandler sees the same OTLPHandler stats object as the
+// live ingest path.
+func TestEndToEnd_MetricsReflectsIngest(t *testing.T) {
+	rig := newE2ERig(t, "test-key")
+
+	// POST one record and wait for it to land.
+	batch := makeOTLPBatch("svc-metrics", "h-1", "via metrics test",
+		logspb.SeverityNumber_SEVERITY_NUMBER_INFO, time.Now())
+	resp := postBatch(t, rig, batch, "test-key")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("ingest: got %d, want 200", resp.StatusCode)
+	}
+	waitForWrites(t, rig.writer, 1, 2*time.Second)
+
+	metricsResp, err := http.Get(rig.queryURL + api.MetricsPath)
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	t.Cleanup(func() { _ = metricsResp.Body.Close() })
+	if metricsResp.StatusCode != http.StatusOK {
+		t.Fatalf("metrics status: got %d, want 200", metricsResp.StatusCode)
+	}
+	body, err := io.ReadAll(metricsResp.Body)
+	if err != nil {
+		t.Fatalf("read metrics body: %v", err)
+	}
+	s := string(body)
+	// One accepted record, one written, zero dropped — proves the
+	// metrics handler reads the same state objects the live path
+	// mutates (as opposed to a fresh zero-valued snapshot).
+	for _, want := range []string{
+		"binnacle_ingest_records_accepted_total 1",
+		"binnacle_writer_written_total 1",
+		"binnacle_writer_dropped_total 0",
+		`binnacle_build_info{version="e2e-test"} 1`,
+	} {
+		if !bytes.Contains(body, []byte(want)) {
+			t.Errorf("metrics body missing %q; got:\n%s", want, s)
+		}
 	}
 }
