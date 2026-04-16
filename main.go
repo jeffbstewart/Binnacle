@@ -223,6 +223,9 @@ func buildQueryServer(port int, db *sql.DB, query, metrics http.Handler) *http.S
 	mux.HandleFunc("GET /api/logs/health", makeHealthHandler(db))
 	mux.Handle("GET "+api.QueryPath, query)
 	mux.Handle("GET "+api.MetricsPath, metrics)
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, api.QueryPath, http.StatusTemporaryRedirect)
+	})
 
 	// TODO(phase2): mount /api/logs/schema, /summary, /errors,
 	//               /correlation/{id}, /tail, /stats, and the HTML UI.
