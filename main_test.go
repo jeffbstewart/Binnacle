@@ -206,7 +206,7 @@ func newE2ERig(t *testing.T, apiKey string) *e2eRig {
 	otlp := &ingest.OTLPHandler{Writer: writer, Converter: ingest.NewConverter()}
 	query := &api.QueryHandler{DB: db}
 	metrics := &api.MetricsHandler{DB: db, Writer: writer, Ingest: otlp, Version: "e2e-test"}
-	ingestSrv := httptest.NewServer(buildIngestServer(0, apiKey, otlp).Handler)
+	ingestSrv := httptest.NewServer(buildIngestServer(0, apiKey, otlp, nil).Handler)
 	querySrv := httptest.NewServer(buildQueryServer(0, db, query, metrics).Handler)
 	t.Cleanup(ingestSrv.Close)
 	t.Cleanup(querySrv.Close)

@@ -34,6 +34,7 @@ import (
 
 	"github.com/jeffbstewart/Binnacle/internal/api"
 	"github.com/jeffbstewart/Binnacle/internal/ingest"
+	"github.com/jeffbstewart/Binnacle/internal/selflog"
 	"github.com/jeffbstewart/Binnacle/internal/store"
 )
 
@@ -152,11 +153,13 @@ func main() {
 	writer := store.NewWriter(db, 1024)
 	go writer.Run(writerCtx)
 
+	selflog.Init(writer, version)
+
 	otlp := &ingest.OTLPHandler{Writer: writer, Converter: ingest.NewConverter()}
 	query := &api.QueryHandler{DB: db}
 	metrics := &api.MetricsHandler{DB: db, Writer: writer, Ingest: otlp, Version: version}
 
-	ingestSrv := buildIngestServer(cfg.otlpHTTPPort, apiKey, otlp)
+	ingestSrv := buildIngestServer(cfg.otlpHTTPPort, apiKey, otlp, selflog.AuthFailure)
 	querySrv := buildQueryServer(cfg.queryPort, db, query, metrics)
 
 	// If either server fails to bind (port in use, permission denied)
@@ -167,12 +170,14 @@ func main() {
 	var fatalOnce sync.Once
 	fatal := func() { fatalOnce.Do(func() { close(fatalErr) }) }
 
+	selflog.Startup()
+
 	go runServer(ingestSrv, "ingest", fatal)
 	go runServer(querySrv, "query", fatal)
 
 	select {
 	case <-sigCtx.Done():
-		slog.Info("shutdown signal received, stopping")
+		selflog.ShutdownRequested()
 	case <-fatalErr:
 		slog.Error("fatal server error, stopping")
 	}
@@ -182,18 +187,11 @@ func main() {
 	// anything that was going to land in the queue is already there.
 	shutdownHTTPServers(ingestSrv, querySrv)
 
-	// Stage 2: tell the writer to drain and wait for it. Run() exits
-	// its select on ctx.Done, then drains any queued records before
-	// closing Done().
+	// Stage 2: write the "shutdown complete" record while the writer is
+	// still running, then cancel and drain.
+	selflog.ShutdownComplete(writer.Stats())
 	stopWriter()
 	<-writer.Done()
-	s := writer.Stats()
-	slog.Info("writer drained",
-		"submitted", s.Submitted,
-		"written", s.Written,
-		"dropped", s.Dropped,
-		"too_old", s.TooOld,
-		"queue_len", s.QueueLen)
 
 	// Stage 3: defer runs db.Close() on return.
 	slog.Info("binnacle stopped")
@@ -201,9 +199,9 @@ func main() {
 
 // buildIngestServer mounts the OTLP HTTP handler at OTLPPath behind
 // the shared-key middleware. Non-OTLP paths get 404.
-func buildIngestServer(port int, apiKey string, otlp http.Handler) *http.Server {
+func buildIngestServer(port int, apiKey string, otlp http.Handler, onAuthFail ingest.AuthFailureFunc) *http.Server {
 	mux := http.NewServeMux()
-	mux.Handle("POST "+ingest.OTLPPath, ingest.RequireAPIKey(apiKey, otlp))
+	mux.Handle("POST "+ingest.OTLPPath, ingest.RequireAPIKey(apiKey, otlp, onAuthFail))
 	return &http.Server{
 		Addr:              fmt.Sprintf(":%d", port),
 		Handler:           mux,
@@ -249,11 +247,12 @@ func runServer(srv *http.Server, name string, fatal func()) {
 }
 
 // shutdownHTTPServers calls Shutdown on both servers in parallel with
-// a shared 10s budget. Errors are logged but don't stop us from
-// moving on to the writer drain — a stuck HTTP handler is not a
-// reason to lose unwritten records.
+// a shared 5s budget. Kept under Docker's default stop_grace_period
+// (10s) to leave headroom for the writer drain + DB close that follow.
+// Errors are logged but don't stop us from moving on — a stuck HTTP
+// handler is not a reason to lose unwritten records.
 func shutdownHTTPServers(servers ...*http.Server) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	var wg sync.WaitGroup
