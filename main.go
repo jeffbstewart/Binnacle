@@ -159,8 +159,10 @@ func main() {
 	query := &api.QueryHandler{DB: db}
 	metrics := &api.MetricsHandler{DB: db, Writer: writer, Ingest: otlp, Version: version}
 
+	viewer := &api.ViewerHandler{DB: db}
+
 	ingestSrv := buildIngestServer(cfg.otlpHTTPPort, apiKey, otlp, selflog.AuthFailure)
-	querySrv := buildQueryServer(cfg.queryPort, db, query, metrics)
+	querySrv := buildQueryServer(cfg.queryPort, db, query, metrics, viewer)
 
 	// If either server fails to bind (port in use, permission denied)
 	// we want the whole process to exit, not limp along half-serving.
@@ -216,13 +218,14 @@ func buildIngestServer(port int, apiKey string, otlp http.Handler, onAuthFail in
 // db is the handle the health endpoint pings; passing nil yields a
 // handler that always returns 200 (used by a handful of tests that
 // don't care about DB state).
-func buildQueryServer(port int, db *sql.DB, query, metrics http.Handler) *http.Server {
+func buildQueryServer(port int, db *sql.DB, query, metrics, viewer http.Handler) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/logs/health", makeHealthHandler(db))
 	mux.Handle("GET "+api.QueryPath, query)
 	mux.Handle("GET "+api.MetricsPath, metrics)
+	mux.Handle("GET "+api.ViewerPath, viewer)
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, api.QueryPath, http.StatusTemporaryRedirect)
+		http.Redirect(w, r, api.ViewerPath, http.StatusTemporaryRedirect)
 	})
 
 	// TODO(phase2): mount /api/logs/schema, /summary, /errors,
