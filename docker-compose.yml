@@ -28,6 +28,11 @@ services:
     #   4317: OTLP gRPC ingest  (clients with gRPC — JVM, iOS, Android, Go, Rust)
     #   4318: OTLP HTTP ingest  (Roku)
     #   8088: Query API + HTML UI + Prometheus /metrics scrape endpoint
+    #         (HTTPS — auto-generated self-signed cert lives in the
+    #         data volume at /data/tls/. Browsers warn once on first
+    #         visit; click through and they remember the exception.
+    #         Prometheus scrapes need
+    #         tls_config.insecure_skip_verify: true under the job.)
     ports:
       - "4317:4317"
       - "4318:4318"

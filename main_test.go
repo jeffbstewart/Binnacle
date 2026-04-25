@@ -107,8 +107,13 @@ func TestHealthHandler_DBUnreachable(t *testing.T) {
 
 // TestRunHealthcheck_Ok verifies that a 200 OK response from the
 // target endpoint produces exit code 0.
+//
+// runHealthcheck talks HTTPS now (matching the production query
+// server), so we need a TLS test server. NewTLSServer mints its own
+// cert; the InsecureSkipVerify in runHealthcheck accepts it without
+// fuss — exactly the loopback-only path the production probe takes.
 func TestRunHealthcheck_Ok(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}))
@@ -121,9 +126,12 @@ func TestRunHealthcheck_Ok(t *testing.T) {
 }
 
 // TestRunHealthcheck_Non200 verifies that a non-2xx response produces
-// exit code 1.
+// exit code 1. Uses NewTLSServer to match the production scheme; an
+// HTTP test server would also produce exit 1 (because runHealthcheck
+// is HTTPS-only) but for the wrong reason — the connection would
+// fail before the status code mattered.
 func TestRunHealthcheck_Non200(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "unhealthy", http.StatusInternalServerError)
 	}))
 	t.Cleanup(srv.Close)

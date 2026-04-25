@@ -32,10 +32,13 @@ import (
 	"syscall"
 	"time"
 
+	"crypto/tls"
+
 	"github.com/jeffbstewart/Binnacle/internal/api"
 	"github.com/jeffbstewart/Binnacle/internal/ingest"
 	"github.com/jeffbstewart/Binnacle/internal/selflog"
 	"github.com/jeffbstewart/Binnacle/internal/store"
+	"github.com/jeffbstewart/Binnacle/internal/tlsbootstrap"
 )
 
 // version is set at build time via -ldflags "-X main.version=...".
@@ -50,6 +53,9 @@ type config struct {
 	logLevel      string
 	apiKeyEnv     string
 	healthcheck   bool
+	tlsCertPath   string
+	tlsKeyPath    string
+	tlsExtraHosts string
 }
 
 func parseFlags() (config, error) {
@@ -66,6 +72,12 @@ func parseFlags() (config, error) {
 		"name of the env var holding the shared write-path API key")
 	fs.BoolVar(&c.healthcheck, "healthcheck", false,
 		"probe the local /api/logs/health endpoint and exit 0 (ok) or 1 (fail); used as the Docker HEALTHCHECK")
+	fs.StringVar(&c.tlsCertPath, "tls-cert", "/data/tls/cert.pem",
+		"path to the TLS certificate served by the query port; auto-generated as a self-signed pair on first start when missing")
+	fs.StringVar(&c.tlsKeyPath, "tls-key", "/data/tls/key.pem",
+		"path to the TLS private key paired with --tls-cert")
+	fs.StringVar(&c.tlsExtraHosts, "tls-extra-hosts", "",
+		"comma-separated extra DNS names / IPs to add to the auto-generated cert's SubjectAltName (localhost + 127.0.0.1 + ::1 are always included)")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return c, err
@@ -105,6 +117,18 @@ func main() {
 	// port and exits. Docker HEALTHCHECK calls this.
 	if cfg.healthcheck {
 		os.Exit(runHealthcheck(cfg.queryPort))
+	}
+
+	// Mint a self-signed TLS pair for the query server if there isn't
+	// one on disk already. EnsureSelfSigned is a no-op when both files
+	// exist, so this only runs the expensive ECDSA generation on the
+	// very first start (or after an operator deletes the files to
+	// force a re-issue).
+	tlsExtra := splitCSV(cfg.tlsExtraHosts)
+	if err := tlsbootstrap.EnsureSelfSigned(cfg.tlsCertPath, cfg.tlsKeyPath, tlsExtra); err != nil {
+		slog.Error("tls bootstrap failed", "error", err,
+			"cert", cfg.tlsCertPath, "key", cfg.tlsKeyPath)
+		os.Exit(1)
 	}
 
 	logger := newLogger(cfg.logLevel)
@@ -175,7 +199,7 @@ func main() {
 	selflog.Startup()
 
 	go runServer(ingestSrv, "ingest", fatal)
-	go runServer(querySrv, "query", fatal)
+	go runTLSServer(querySrv, "query", cfg.tlsCertPath, cfg.tlsKeyPath, fatal)
 
 	select {
 	case <-sigCtx.Done():
@@ -249,6 +273,37 @@ func runServer(srv *http.Server, name string, fatal func()) {
 	}
 }
 
+// runTLSServer is runServer's HTTPS twin: serves the same handler
+// chain via ListenAndServeTLS using the bootstrapped self-signed
+// cert/key. Modern browsers (Chrome HTTPS-First, etc.) won't fall
+// back to plain HTTP for any navigation, so the query UI has to
+// speak TLS even on a LAN-only deployment.
+func runTLSServer(srv *http.Server, name, certFile, keyFile string, fatal func()) {
+	slog.Info(name+" server listening (TLS)",
+		"addr", srv.Addr, "cert", certFile)
+	if err := srv.ListenAndServeTLS(certFile, keyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		slog.Error(name+" server failed", "error", err)
+		fatal()
+	}
+}
+
+// splitCSV trims whitespace and drops empty entries from a comma-
+// separated flag value. Used by --tls-extra-hosts.
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := parts[:0]
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // shutdownHTTPServers calls Shutdown on both servers in parallel with
 // a shared 5s budget. Kept under Docker's default stop_grace_period
 // (10s) to leave headroom for the writer drain + DB close that follow.
@@ -312,9 +367,20 @@ func makeHealthHandler(db *sql.DB) http.HandlerFunc {
 //
 // It intentionally uses 127.0.0.1 instead of localhost so it doesn't
 // depend on /etc/hosts — distroless doesn't ship one by default.
+//
+// The query port now serves TLS with our self-signed cert; loopback
+// trust isn't worth the complexity, so the probe uses
+// InsecureSkipVerify. The probe is in-process and never crosses the
+// network namespace — there's no MITM exposure on the loopback
+// interface.
 func runHealthcheck(port int) int {
-	url := fmt.Sprintf("http://127.0.0.1:%d/api/logs/health", port)
-	client := &http.Client{Timeout: 2 * time.Second}
+	url := fmt.Sprintf("https://127.0.0.1:%d/api/logs/health", port)
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // loopback only
+		},
+	}
 	resp, err := client.Get(url)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "healthcheck failed:", err)
