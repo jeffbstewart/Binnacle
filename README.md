@@ -45,7 +45,7 @@ implementing.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                    LAN (172.16.0.0/16)                       │
+│                    LAN (private subnet)                      │
 │                                                              │
 │   MediaManager ─┐                                            │
 │   Transcode ────┤                                            │
@@ -419,7 +419,7 @@ else is a dependency + config.
 All clients read two values:
 
 - `OTEL_EXPORTER_OTLP_ENDPOINT` — `http://logcollector.lan:4317` for
-  LAN services, `http://172.16.4.12:4318` for Roku (HTTP endpoint).
+  LAN services, `http://<binnacle-host>:4318` for Roku (HTTP endpoint).
 - `OTEL_EXPORTER_OTLP_HEADERS` — `x-logging-api-key=<key>` (see Security
   Model).
 
