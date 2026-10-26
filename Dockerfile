@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1.7
 
 # ---------- build stage ----------
-# golang:1.26-alpine, pinned by digest (docker buildx imagetools inspect golang:1.26-alpine)
-FROM golang:1.26-alpine@sha256:28d89ee9cc0ff9fec75c82ca201e6bf7fdf9a679d4b7b24dfa04f2bb766bb468 AS builder
+# golang:1.26.10-alpine, pinned by digest (docker buildx imagetools inspect golang:1.26.10-alpine),
+# resolved 2026-10-26 for the 2026-10-21 Go security release (GO-2026-6809, crypto/x509).
+FROM golang:1.26.10-alpine@sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba AS builder
 
 WORKDIR /src
 
