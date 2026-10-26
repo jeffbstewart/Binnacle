@@ -2,7 +2,7 @@ module github.com/jeffbstewart/Binnacle
 
 go 1.26
 
-toolchain go1.26.7
+toolchain go1.26.10
 
 require (
 	go.opentelemetry.io/proto/otlp v1.10.0
