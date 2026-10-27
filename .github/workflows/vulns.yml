@@ -1,0 +1,76 @@
+# Scheduled vulnerability scan.  PR CI only runs when someone pushes;
+# this runs every day against main so a new Go advisory against the
+# pinned toolchain or a module surfaces within a day, not when the
+# next PR happens by (2026-10-26: GO-2026-6809 sat five days until a
+# docs PR tripped a gate).  Zero secrets by policy (cloister
+# docs/grange.md R6): the workflow's own token, scoped to issues, is
+# the only credential, and it is used to keep ONE tracking issue
+# assigned to the operator -- opened or refreshed on findings, closed
+# on a clean run -- because a scheduled run's failure email goes to
+# the run's actor, not to a human.  govulncheck is pinned like any
+# dependency; the vulnerability database it consults is always live.
+name: vulns
+
+on:
+  schedule:
+    - cron: "17 6 * * *"   # daily, 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  GOFLAGS: -mod=readonly
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: govulncheck
+        id: scan
+        run: |
+          set +e
+          go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./... > vulns.txt 2>&1
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+          cat vulns.txt
+
+      # One issue, by title: refreshed while findings persist, closed
+      # when a run comes back clean.  Exit code 3 is "vulnerabilities
+      # found"; any other non-zero is the tool failing, which also
+      # deserves a human.
+      - name: Track findings in an issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATUS: ${{ steps.scan.outputs.status }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="govulncheck: findings on main"
+          existing=$(gh issue list --repo "$REPO" --state open --search "in:title \"$title\"" --json number --jq '.[0].number')
+          if [ "$STATUS" = "0" ]; then
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --repo "$REPO" --body "Clean as of $(date -u +%Y-%m-%d) ($RUN_URL); closing."
+              gh issue close "$existing" --repo "$REPO"
+            fi
+            exit 0
+          fi
+          {
+            echo "govulncheck exited $STATUS at $(date -u +%Y-%m-%dT%H:%MZ) -- $RUN_URL"
+            echo
+            echo '```'
+            cat vulns.txt
+            echo '```'
+          } > body.md
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPO" --body-file body.md
+          else
+            gh issue create --repo "$REPO" --title "$title" --assignee jeffbstewart --body-file body.md
+          fi
+          exit 1
