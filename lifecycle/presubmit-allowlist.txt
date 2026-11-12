@@ -1,0 +1,7 @@
+# Presubmit allowlist — one pattern per line.
+# Lines containing any of these substrings are excluded from violation reports.
+# Comments start with #, blank lines ignored.
+
+# Localhost / any-interface bind addresses (used in main.go, docs)
+127.0.0.1
+0.0.0.0

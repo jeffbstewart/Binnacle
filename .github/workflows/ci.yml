@@ -1,0 +1,43 @@
+# The presubmit suite (forge-lint docs/requirements.md R3): the "verify" check
+# the main ruleset requires.  Zero secrets by policy (R6) — the forge
+# lint audits Actions secrets to empty.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      # The forge's own merge-path protections (forge-lint docs/requirements.md
+      # R1-R8), asserted against this repo's pinned expectations.  The
+      # workflow token cannot read collaborator roles or Actions secrets,
+      # so those report UNVERIFIED (-allow-unverified downgrades them to
+      # warnings); the operator runs the same lint with an admin token
+      # for the full verdict.  Any readable rule that drifts still fails
+      # the PR.
+      - name: Forge lint (merge-path protections)
+        env:
+          FORGE_LINT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: go run github.com/jeffbstewart/forge-lint/cmd/forge-lint@v0.1.0 -config .github/forge-lint.yaml -allow-unverified
