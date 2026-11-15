@@ -22,7 +22,7 @@ import (
 func setupMetricsRig(t *testing.T) (*MetricsHandler, *sql.DB, *store.Writer, *ingest.OTLPHandler) {
 	t.Helper()
 
-	db, err := store.Open(t.TempDir())
+	db, err := store.Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

@@ -5,8 +5,10 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -19,6 +21,18 @@ import (
 // endpoint. Kept as a constant so handler registration, tests, and
 // documentation all agree.
 const QueryPath = "/api/logs/query"
+
+// DBTimeout bounds the database work behind a single read-path HTTP
+// request. The store has one SQLite connection shared with the
+// writer, so an unbounded read would block every other request and
+// ingest behind it. Derived from the request context, so a client that
+// disconnects also cancels its query.
+const DBTimeout = 10 * time.Second
+
+// dbContext returns the per-request DB context described at DBTimeout.
+func dbContext(r *http.Request) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(r.Context(), DBTimeout)
+}
 
 // defaultLimit mirrors store.Query's default. Declared here as well
 // so the handler's docstring can cite a single number.
@@ -54,7 +68,13 @@ func (h *QueryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := store.Query(h.DB, filter)
+	ctx, cancel := dbContext(r)
+	defer cancel()
+	result, err := store.Query(ctx, h.DB, filter)
+	if errors.Is(err, context.DeadlineExceeded) {
+		http.Error(w, "query timed out after "+DBTimeout.String(), http.StatusGatewayTimeout)
+		return
+	}
 	if err != nil {
 		http.Error(w, "query: "+err.Error(), http.StatusInternalServerError)
 		return

@@ -13,7 +13,7 @@ func TestOpen_CreatesDirectoryAndRunsMigrations(t *testing.T) {
 	// Nested directory that doesn't exist — Open must create it.
 	dataDir := filepath.Join(t.TempDir(), "nested", "data")
 
-	db, err := Open(dataDir)
+	db, err := Open(t.Context(), dataDir)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestOpen_CreatesDirectoryAndRunsMigrations(t *testing.T) {
 func TestOpen_Idempotent(t *testing.T) {
 	dataDir := t.TempDir()
 
-	db1, err := Open(dataDir)
+	db1, err := Open(t.Context(), dataDir)
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestOpen_Idempotent(t *testing.T) {
 		t.Fatalf("close first DB: %v", err)
 	}
 
-	db2, err := Open(dataDir)
+	db2, err := Open(t.Context(), dataDir)
 	if err != nil {
 		t.Fatalf("second Open: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestOpen_Idempotent(t *testing.T) {
 // blocking writers (or vice versa) would be a serious regression for a
 // log-ingest workload.
 func TestOpen_WalMode(t *testing.T) {
-	db, err := Open(t.TempDir())
+	db, err := Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

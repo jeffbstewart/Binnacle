@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -10,8 +11,8 @@ import (
 // partitions, sorted alphabetically. Used to populate the UI filter
 // dropdown. The query is fast — one UNION per day with DISTINCT, at
 // most 7 subqueries at default retention.
-func ListDistinctServices(db *sql.DB) ([]string, error) {
-	days, err := ListPartitionDays(db)
+func ListDistinctServices(ctx context.Context, db *sql.DB) ([]string, error) {
+	days, err := ListPartitionDays(ctx, db)
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +35,7 @@ func ListDistinctServices(db *sql.DB) ([]string, error) {
 		joinStrings(parts, " UNION ALL ") +
 		`) ORDER BY service`
 
-	rows, err := db.Query(query)
+	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}

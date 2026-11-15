@@ -17,7 +17,7 @@ import (
 // writer, so tests can seed records and assert end-to-end behavior.
 func setupDB(t *testing.T) (*sql.DB, *store.Writer) {
 	t.Helper()
-	db, err := store.Open(t.TempDir())
+	db, err := store.Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -284,5 +284,56 @@ func TestQueryHandler_JSONShape(t *testing.T) {
 	}
 	if r.Time.IsZero() {
 		t.Errorf("time should be populated")
+	}
+}
+
+// TestQueryHandler_TimesOutWhenConnectionBusy pins the store's single
+// connection and checks the handler answers 504 at the request's
+// deadline rather than hanging.
+func TestQueryHandler_TimesOutWhenConnectionBusy(t *testing.T) {
+	db, _ := setupDB(t)
+	conn, err := db.Conn(t.Context())
+	if err != nil {
+		t.Fatalf("db.Conn: %v", err)
+	}
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, QueryPath, nil)
+	rec := httptest.NewRecorder()
+
+	start := time.Now()
+	(&QueryHandler{DB: db}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want 504; body=%s", rec.Code, rec.Body.String())
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("handler took %s to honor a 100ms deadline", elapsed)
+	}
+}
+
+// TestViewerHandler_RendersWhenConnectionBusy checks the viewer still
+// returns a page (with the error shown) instead of hanging.
+func TestViewerHandler_RendersWhenConnectionBusy(t *testing.T) {
+	db, _ := setupDB(t)
+	conn, err := db.Conn(t.Context())
+	if err != nil {
+		t.Fatalf("db.Conn: %v", err)
+	}
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, ViewerPath, nil)
+	rec := httptest.NewRecorder()
+
+	start := time.Now()
+	(&ViewerHandler{DB: db}).ServeHTTP(rec, req)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("viewer took %s to honor a 100ms deadline", elapsed)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 with inline error", rec.Code)
 	}
 }

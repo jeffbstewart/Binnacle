@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -91,15 +92,15 @@ END;
 // partitions metadata table. Safe to call on every write path — the
 // SQLite checks short-circuit quickly when everything is already in
 // place.
-func ensurePartition(db *sql.DB, day time.Time) error {
+func ensurePartition(ctx context.Context, db *sql.DB, day time.Time) error {
 	name := PartitionName(day)
 	fts := ftsPartitionName(day)
 	ddl := strings.NewReplacer("{{TABLE}}", name, "{{FTS}}", fts).Replace(partitionDDL)
-	if _, err := db.Exec(ddl); err != nil {
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("create partition %s: %w", name, err)
 	}
 	now := time.Now().Unix()
-	_, err := db.Exec(
+	_, err := db.ExecContext(ctx,
 		`INSERT INTO partitions (day, created_at, last_ingest_at) VALUES (?, ?, ?)
 		 ON CONFLICT(day) DO NOTHING`,
 		dayKey(day), now, now,
@@ -114,8 +115,8 @@ func ensurePartition(db *sql.DB, day time.Time) error {
 // canonical YYYY-MM-DD string, in ascending order. Used by the query
 // layer to decide which tables to UNION across, and by retention to
 // know what's droppable.
-func ListPartitionDays(db *sql.DB) ([]string, error) {
-	rows, err := db.Query(`SELECT day FROM partitions ORDER BY day`)
+func ListPartitionDays(ctx context.Context, db *sql.DB) ([]string, error) {
+	rows, err := db.QueryContext(ctx, `SELECT day FROM partitions ORDER BY day`)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +136,7 @@ func ListPartitionDays(db *sql.DB) ([]string, error) {
 // shadow, the indexes/triggers (dropped implicitly with the tables),
 // and the partitions metadata row. All-or-nothing via a transaction.
 // Idempotent — dropping a non-existent partition is a no-op.
-func DropPartition(db *sql.DB, day string) error {
+func DropPartition(ctx context.Context, db *sql.DB, day string) error {
 	t, err := time.Parse("2006-01-02", day)
 	if err != nil {
 		return fmt.Errorf("bad day %q: %w", day, err)
@@ -143,19 +144,19 @@ func DropPartition(db *sql.DB, day string) error {
 	name := PartitionName(t)
 	fts := ftsPartitionName(t)
 
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS ` + fts); err != nil {
+	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS `+fts); err != nil {
 		return fmt.Errorf("drop fts %s: %w", fts, err)
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS ` + name); err != nil {
+	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS `+name); err != nil {
 		return fmt.Errorf("drop table %s: %w", name, err)
 	}
-	if _, err := tx.Exec(`DELETE FROM partitions WHERE day = ?`, day); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM partitions WHERE day = ?`, day); err != nil {
 		return fmt.Errorf("delete metadata %s: %w", day, err)
 	}
 	return tx.Commit()

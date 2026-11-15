@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +13,7 @@ import (
 // helper: open a store with a running writer and return both.
 func openWithWriter(t *testing.T) (*sql.DB, *Writer) {
 	t.Helper()
-	db, err := Open(t.TempDir())
+	db, err := Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -50,13 +51,13 @@ func submit(t *testing.T, w *Writer, r Record) {
 }
 
 func TestQuery_EmptyStoreReturnsEmpty(t *testing.T) {
-	db, err := Open(t.TempDir())
+	db, err := Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	result, err := Query(db, QueryFilter{})
+	result, err := Query(t.Context(), db, QueryFilter{})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -96,7 +97,7 @@ func TestQuery_RoundTripsAllFields(t *testing.T) {
 	})
 	mustWrite(t, w, 1)
 
-	result, err := Query(db, QueryFilter{})
+	result, err := Query(t.Context(), db, QueryFilter{})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -142,7 +143,7 @@ func TestQuery_OrdersByTimeDesc(t *testing.T) {
 	}
 	mustWrite(t, w, 3)
 
-	result, err := Query(db, QueryFilter{})
+	result, err := Query(t.Context(), db, QueryFilter{})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -170,7 +171,7 @@ func TestQuery_FilterByService(t *testing.T) {
 	}
 	mustWrite(t, w, 3)
 
-	result, err := Query(db, QueryFilter{Services: []string{"a", "c"}})
+	result, err := Query(t.Context(), db, QueryFilter{Services: []string{"a", "c"}})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -199,7 +200,7 @@ func TestQuery_FilterByMinSeverity(t *testing.T) {
 	}
 	mustWrite(t, w, 4)
 
-	result, err := Query(db, QueryFilter{MinSeverity: SeverityWarn})
+	result, err := Query(t.Context(), db, QueryFilter{MinSeverity: SeverityWarn})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -228,7 +229,7 @@ func TestQuery_FilterByTimeRange(t *testing.T) {
 	mustWrite(t, w, 5)
 
 	// Keep only records with time_ns in [base+1m, base+4m)
-	result, err := Query(db, QueryFilter{
+	result, err := Query(t.Context(), db, QueryFilter{
 		Since: base.Add(1 * time.Minute),
 		Until: base.Add(4 * time.Minute),
 	})
@@ -254,7 +255,7 @@ func TestQuery_LimitClampedToMax(t *testing.T) {
 	mustWrite(t, w, 10)
 
 	// Under-bound: 0 becomes default.
-	r, err := Query(db, QueryFilter{Limit: 0})
+	r, err := Query(t.Context(), db, QueryFilter{Limit: 0})
 	if err != nil {
 		t.Fatalf("Limit=0: %v", err)
 	}
@@ -262,7 +263,7 @@ func TestQuery_LimitClampedToMax(t *testing.T) {
 		t.Errorf("Limit=0 (default): got %d, want 10", r.CountReturned)
 	}
 	// Explicit small limit.
-	r, err = Query(db, QueryFilter{Limit: 5})
+	r, err = Query(t.Context(), db, QueryFilter{Limit: 5})
 	if err != nil {
 		t.Fatalf("Limit=5: %v", err)
 	}
@@ -270,7 +271,7 @@ func TestQuery_LimitClampedToMax(t *testing.T) {
 		t.Errorf("Limit=5: got %d, want 5", r.CountReturned)
 	}
 	// Excess limit is silently clamped — no error.
-	if _, err := Query(db, QueryFilter{Limit: 99999}); err != nil {
+	if _, err := Query(t.Context(), db, QueryFilter{Limit: 99999}); err != nil {
 		t.Errorf("Limit=99999 should clamp silently, got error: %v", err)
 	}
 }
@@ -305,12 +306,12 @@ func TestQuery_CrossesMultiplePartitions(t *testing.T) {
 	})
 	mustWrite(t, w, 2)
 
-	days, _ := ListPartitionDays(db)
+	days, _ := ListPartitionDays(t.Context(), db)
 	if len(days) != 2 {
 		t.Fatalf("expected 2 partitions, got %d: %v", len(days), days)
 	}
 
-	result, err := Query(db, QueryFilter{})
+	result, err := Query(t.Context(), db, QueryFilter{})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -333,7 +334,7 @@ func TestQuery_JSONOutputShape(t *testing.T) {
 	})
 	mustWrite(t, w, 1)
 
-	result, err := Query(db, QueryFilter{})
+	result, err := Query(t.Context(), db, QueryFilter{})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -351,5 +352,29 @@ func TestQuery_JSONOutputShape(t *testing.T) {
 		if strings.Contains(s, needle) {
 			t.Errorf("expected %s to be omitted: %s", needle, s)
 		}
+	}
+}
+
+// TestQuery_HonorsDeadlineWhenConnectionBusy pins the store's single
+// connection (as a wedged writer or reader would) and checks that
+// Query gives up at its deadline instead of waiting forever.
+func TestQuery_HonorsDeadlineWhenConnectionBusy(t *testing.T) {
+	db, _ := openWithWriter(t)
+
+	conn, err := db.Conn(t.Context())
+	if err != nil {
+		t.Fatalf("db.Conn: %v", err)
+	}
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err = Query(ctx, db, QueryFilter{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want DeadlineExceeded, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("Query took %s to honor a 100ms deadline", elapsed)
 	}
 }

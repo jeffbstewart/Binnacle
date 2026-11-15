@@ -28,7 +28,7 @@ import (
 // Passes a real store so the handler exercises its actual PingContext
 // path rather than the nil-db shortcut.
 func TestHealthHandler_OK(t *testing.T) {
-	db, err := store.Open(t.TempDir())
+	db, err := store.Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestHealthHandler_DBUnreachable(t *testing.T) {
 	// Open a store, then close it: every subsequent ping returns
 	// "sql: database is closed" — a reliable way to simulate an
 	// unreachable DB without touching the file system.
-	db, err := store.Open(t.TempDir())
+	db, err := store.Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -195,7 +195,7 @@ type e2eRig struct {
 func newE2ERig(t *testing.T, apiKey string) *e2eRig {
 	t.Helper()
 
-	db, err := store.Open(t.TempDir())
+	db, err := store.Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

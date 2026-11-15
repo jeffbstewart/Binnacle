@@ -26,7 +26,7 @@ import (
 // and the DB so tests can probe persisted state.
 func setupHandler(t *testing.T) (*OTLPHandler, *sql.DB) {
 	t.Helper()
-	db, err := store.Open(t.TempDir())
+	db, err := store.Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestOTLPHandler_ReportsPartialSuccessOnQueueFull(t *testing.T) {
 	// 1-slot queue with NO drainer so Submit saturates after the
 	// first record. The handler must still return 200 with a
 	// PartialSuccess body describing the drops.
-	db, err := store.Open(t.TempDir())
+	db, err := store.Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

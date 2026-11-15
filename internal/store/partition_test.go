@@ -35,14 +35,14 @@ func TestPartitionName_TimezoneAgnostic(t *testing.T) {
 }
 
 func TestEnsurePartition_CreatesTablesAndMetadata(t *testing.T) {
-	db, err := Open(t.TempDir())
+	db, err := Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
 	day := time.Date(2026, 4, 13, 0, 0, 0, 0, time.UTC)
-	if err := ensurePartition(db, day); err != nil {
+	if err := ensurePartition(t.Context(), db, day); err != nil {
 		t.Fatalf("ensurePartition: %v", err)
 	}
 
@@ -67,7 +67,7 @@ func TestEnsurePartition_CreatesTablesAndMetadata(t *testing.T) {
 }
 
 func TestEnsurePartition_Idempotent(t *testing.T) {
-	db, err := Open(t.TempDir())
+	db, err := Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestEnsurePartition_Idempotent(t *testing.T) {
 
 	day := time.Date(2026, 4, 13, 0, 0, 0, 0, time.UTC)
 	for range 3 {
-		if err := ensurePartition(db, day); err != nil {
+		if err := ensurePartition(t.Context(), db, day); err != nil {
 			t.Fatalf("ensurePartition should be idempotent: %v", err)
 		}
 	}
@@ -89,14 +89,14 @@ func TestEnsurePartition_Idempotent(t *testing.T) {
 }
 
 func TestEnsurePartition_FTSStaysInSync(t *testing.T) {
-	db, err := Open(t.TempDir())
+	db, err := Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
 	day := time.Date(2026, 4, 13, 0, 0, 0, 0, time.UTC)
-	if err := ensurePartition(db, day); err != nil {
+	if err := ensurePartition(t.Context(), db, day); err != nil {
 		t.Fatalf("ensurePartition: %v", err)
 	}
 
@@ -122,7 +122,7 @@ func TestEnsurePartition_FTSStaysInSync(t *testing.T) {
 }
 
 func TestListPartitionDays_Ordered(t *testing.T) {
-	db, err := Open(t.TempDir())
+	db, err := Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -131,12 +131,12 @@ func TestListPartitionDays_Ordered(t *testing.T) {
 	// Create out of order to prove ORDER BY.
 	for _, d := range []string{"2026-04-15", "2026-04-13", "2026-04-14"} {
 		parsed, _ := time.Parse("2006-01-02", d)
-		if err := ensurePartition(db, parsed); err != nil {
+		if err := ensurePartition(t.Context(), db, parsed); err != nil {
 			t.Fatalf("ensurePartition %s: %v", d, err)
 		}
 	}
 
-	days, err := ListPartitionDays(db)
+	days, err := ListPartitionDays(t.Context(), db)
 	if err != nil {
 		t.Fatalf("ListPartitionDays: %v", err)
 	}
@@ -152,17 +152,17 @@ func TestListPartitionDays_Ordered(t *testing.T) {
 }
 
 func TestDropPartition_RemovesEverything(t *testing.T) {
-	db, err := Open(t.TempDir())
+	db, err := Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
 	day := time.Date(2026, 4, 13, 0, 0, 0, 0, time.UTC)
-	if err := ensurePartition(db, day); err != nil {
+	if err := ensurePartition(t.Context(), db, day); err != nil {
 		t.Fatalf("ensurePartition: %v", err)
 	}
-	if err := DropPartition(db, "2026-04-13"); err != nil {
+	if err := DropPartition(t.Context(), db, "2026-04-13"); err != nil {
 		t.Fatalf("DropPartition: %v", err)
 	}
 
@@ -186,14 +186,14 @@ func TestDropPartition_RemovesEverything(t *testing.T) {
 }
 
 func TestDropPartition_Idempotent(t *testing.T) {
-	db, err := Open(t.TempDir())
+	db, err := Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
 	// Drop a partition that never existed.
-	if err := DropPartition(db, "2099-01-01"); err != nil {
+	if err := DropPartition(t.Context(), db, "2099-01-01"); err != nil {
 		t.Fatalf("DropPartition of never-existed: %v", err)
 	}
 }

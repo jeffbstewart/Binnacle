@@ -22,7 +22,7 @@ func openTestDB(t *testing.T) *sql.DB {
 func TestMigrate_FreshDB_AppliesAll(t *testing.T) {
 	db := openTestDB(t)
 
-	if err := Migrate(db); err != nil {
+	if err := Migrate(t.Context(), db); err != nil {
 		t.Fatalf("Migrate on fresh DB: %v", err)
 	}
 
@@ -44,7 +44,7 @@ func TestMigrate_FreshDB_AppliesAll(t *testing.T) {
 func TestMigrate_Idempotent(t *testing.T) {
 	db := openTestDB(t)
 
-	if err := Migrate(db); err != nil {
+	if err := Migrate(t.Context(), db); err != nil {
 		t.Fatalf("first Migrate: %v", err)
 	}
 
@@ -53,7 +53,7 @@ func TestMigrate_Idempotent(t *testing.T) {
 		t.Fatalf("count after first Migrate: %v", err)
 	}
 
-	if err := Migrate(db); err != nil {
+	if err := Migrate(t.Context(), db); err != nil {
 		t.Fatalf("second Migrate should be a no-op: %v", err)
 	}
 
@@ -69,7 +69,7 @@ func TestMigrate_Idempotent(t *testing.T) {
 func TestMigrate_RecordsVersionAndDescription(t *testing.T) {
 	db := openTestDB(t)
 
-	if err := Migrate(db); err != nil {
+	if err := Migrate(t.Context(), db); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
 
@@ -111,7 +111,7 @@ func TestMigrate_TransactionalFailure(t *testing.T) {
 	// inject a bad file into the embed.FS at test time, so we drive the
 	// lower-level helper directly.
 	db := openTestDB(t)
-	if err := ensureMigrationsTable(db); err != nil {
+	if err := ensureMigrationsTable(t.Context(), db); err != nil {
 		t.Fatalf("ensureMigrationsTable: %v", err)
 	}
 
@@ -121,7 +121,7 @@ func TestMigrate_TransactionalFailure(t *testing.T) {
 		Filename:    "V999__broken.sql",
 		SQL:         `THIS IS NOT SQL`,
 	}
-	if err := applyMigration(db, bad); err == nil {
+	if err := applyMigration(t.Context(), db, bad); err == nil {
 		t.Fatalf("applyMigration should have failed on bad SQL")
 	}
 

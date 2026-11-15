@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/jeffbstewart/Binnacle/internal/ingest"
 	"github.com/jeffbstewart/Binnacle/internal/store"
@@ -13,6 +15,11 @@ import (
 // MetricsPath is the canonical scrape endpoint. Exposed as a constant
 // so handler registration, tests, and the Prometheus config agree.
 const MetricsPath = "/metrics"
+
+// metricsDBTimeout bounds the one DB read a scrape does. Kept below
+// Prometheus's default 10s scrape timeout so a wedged store yields a
+// scrape missing binnacle_partitions rather than a failed scrape.
+const metricsDBTimeout = 5 * time.Second
 
 // promContentType is the Prometheus text-format Content-Type for
 // v0.0.4 (the current stable). Newer "application/openmetrics-text"
@@ -51,12 +58,12 @@ func (h *MetricsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", promContentType)
-	h.render(w)
+	h.render(r.Context(), w)
 }
 
 // render writes the full metric snapshot. Split out so tests can
 // assert on content without spinning an HTTP server.
-func (h *MetricsHandler) render(w io.Writer) {
+func (h *MetricsHandler) render(ctx context.Context, w io.Writer) {
 	ws := h.Writer.Stats()
 	counter(w, "binnacle_writer_submitted_total",
 		"Total records submitted to the writer queue.", ws.Submitted)
@@ -94,7 +101,9 @@ func (h *MetricsHandler) render(w io.Writer) {
 	// emitting a broken line would make the whole scrape fail parsing
 	// downstream.
 	var partitions int64
-	if err := h.DB.QueryRow(`SELECT COUNT(*) FROM partitions`).Scan(&partitions); err == nil {
+	ctx, cancel := context.WithTimeout(ctx, metricsDBTimeout)
+	defer cancel()
+	if err := h.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM partitions`).Scan(&partitions); err == nil {
 		gauge(w, "binnacle_partitions",
 			"Current number of daily partition tables.", uint64(partitions))
 	}

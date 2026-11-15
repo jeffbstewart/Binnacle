@@ -65,7 +65,7 @@ func TestColumnSchema_StaysBalanced(t *testing.T) {
 // --- happy path ---
 
 func TestWriter_SubmitAndWrite(t *testing.T) {
-	db, err := Open(t.TempDir())
+	db, err := Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestWriter_SubmitAndWrite(t *testing.T) {
 // positional-arg drift: if an extractor points at the wrong Record
 // field, the round-trip assertion fails.
 func TestWriter_PersistsEveryColumnExtractor(t *testing.T) {
-	db, err := Open(t.TempDir())
+	db, err := Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestWriter_PersistsEveryColumnExtractor(t *testing.T) {
 }
 
 func TestWriter_NullableFieldsBecomeNull(t *testing.T) {
-	db, err := Open(t.TempDir())
+	db, err := Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestWriter_NullableFieldsBecomeNull(t *testing.T) {
 // --- MaxRecordAge enforcement ---
 
 func TestWriter_RejectsRecordsOlderThanMaxAge(t *testing.T) {
-	db, err := Open(t.TempDir())
+	db, err := Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestWriter_RejectsRecordsOlderThanMaxAge(t *testing.T) {
 }
 
 func TestWriter_AcceptsRecordsRightAtMaxAge(t *testing.T) {
-	db, err := Open(t.TempDir())
+	db, err := Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestWriter_AcceptsRecordsRightAtMaxAge(t *testing.T) {
 // --- metadata + multi-day partitions ---
 
 func TestWriter_PartitionMetadataMaintained(t *testing.T) {
-	db, err := Open(t.TempDir())
+	db, err := Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestWriter_PartitionMetadataMaintained(t *testing.T) {
 // --- backpressure ---
 
 func TestWriter_QueueFullReturnsError(t *testing.T) {
-	db, err := Open(t.TempDir())
+	db, err := Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -385,7 +385,7 @@ func TestWriter_QueueFullReturnsError(t *testing.T) {
 // --- shutdown ---
 
 func TestWriter_DrainsOnCancel(t *testing.T) {
-	db, err := Open(t.TempDir())
+	db, err := Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

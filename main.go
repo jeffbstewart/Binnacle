@@ -36,10 +36,16 @@ import (
 
 	"github.com/jeffbstewart/Binnacle/internal/api"
 	"github.com/jeffbstewart/Binnacle/internal/ingest"
+	"github.com/jeffbstewart/Binnacle/internal/selfcheck"
 	"github.com/jeffbstewart/Binnacle/internal/selflog"
 	"github.com/jeffbstewart/Binnacle/internal/store"
 	"github.com/jeffbstewart/Binnacle/internal/tlsbootstrap"
 )
+
+// storeOpenTimeout bounds opening the SQLite store and applying
+// migrations at startup. Generous because a migration may rewrite a
+// large table on the NAS's disks.
+const storeOpenTimeout = 2 * time.Minute
 
 // version is set at build time via -ldflags "-X main.version=...".
 var version = "dev"
@@ -56,6 +62,8 @@ type config struct {
 	tlsCertPath   string
 	tlsKeyPath    string
 	tlsExtraHosts string
+	selfCheck     bool
+	selfCheckTO   time.Duration
 }
 
 func parseFlags() (config, error) {
@@ -78,6 +86,11 @@ func parseFlags() (config, error) {
 		"path to the TLS private key paired with --tls-cert")
 	fs.StringVar(&c.tlsExtraHosts, "tls-extra-hosts", "",
 		"comma-separated extra DNS names / IPs to add to the auto-generated cert's SubjectAltName (localhost + 127.0.0.1 + ::1 are always included)")
+
+	fs.BoolVar(&c.selfCheck, "self-check", true,
+		"on startup, send one OTLP record to our own ingest port and read it back via the query API and viewer, logging each stage to stderr")
+	fs.DurationVar(&c.selfCheckTO, "self-check-timeout", 30*time.Second,
+		"overall time budget for the startup self-check")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return c, err
@@ -158,7 +171,9 @@ func main() {
 
 	// Open the SQLite store: creates the data directory if missing,
 	// enables WAL mode, and applies any pending schema migrations.
-	db, err := store.Open(cfg.dataDir)
+	openCtx, cancelOpen := context.WithTimeout(context.Background(), storeOpenTimeout)
+	db, err := store.Open(openCtx, cfg.dataDir)
+	cancelOpen()
 	if err != nil {
 		slog.Error("open store failed", "error", err)
 		os.Exit(1)
@@ -200,6 +215,20 @@ func main() {
 
 	go runServer(ingestSrv, "ingest", fatal)
 	go runTLSServer(querySrv, "query", cfg.tlsCertPath, cfg.tlsKeyPath, fatal)
+
+	// Prove the ingest -> store -> query -> viewer path end to end.
+	// Runs in the background and only logs; a failure does not stop
+	// the service.
+	if cfg.selfCheck {
+		go func() {
+			_ = selfcheck.Run(sigCtx, selfcheck.Config{
+				IngestBase: fmt.Sprintf("http://127.0.0.1:%d", cfg.otlpHTTPPort),
+				QueryBase:  fmt.Sprintf("https://127.0.0.1:%d", cfg.queryPort),
+				APIKey:     apiKey,
+				Timeout:    cfg.selfCheckTO,
+			})
+		}()
+	}
 
 	select {
 	case <-sigCtx.Done():
