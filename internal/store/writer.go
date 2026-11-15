@@ -32,6 +32,14 @@ import (
 //     This check makes retroactive dating impossible beyond 24 h.
 const MaxRecordAge = 24 * time.Hour
 
+// WriteTimeout bounds the SQL work for one record (partition DDL on
+// a new day, the INSERT, and the metadata bump). It deliberately does
+// not derive from Run's ctx: on shutdown the queue is drained after
+// that ctx is cancelled, and those writes must still be allowed to
+// finish. A write that exceeds it is logged and dropped rather than
+// wedging the writer goroutine (and the single DB connection) forever.
+const WriteTimeout = 10 * time.Second
+
 // Writer serializes log-record writes onto a single SQLite connection.
 // Everything upstream (OTLP HTTP handler, gRPC handler) submits
 // records via Submit; one background goroutine drains the queue.
@@ -222,11 +230,14 @@ func buildPlaceholders(n int) string {
 // do not propagate — losing one record on failure is preferable to
 // killing the writer goroutine.
 func (w *Writer) writeOne(r Record) {
+	ctx, cancel := context.WithTimeout(context.Background(), WriteTimeout)
+	defer cancel()
+
 	// A record belongs to the partition for its CLIENT timestamp,
 	// not ingest time. Late-arriving logs (within MaxRecordAge)
 	// land in the right bucket.
 	t := time.Unix(0, r.TimeNs)
-	if err := w.ensureDay(t); err != nil {
+	if err := w.ensureDay(ctx, t); err != nil {
 		slog.Error("ensure partition failed",
 			"day", dayKey(t), "error", err)
 		return
@@ -243,14 +254,14 @@ func (w *Writer) writeOne(r Record) {
 		`INSERT INTO %s (%s) VALUES (%s)`,
 		PartitionName(t), recordColumnList, recordPlaceholder,
 	)
-	if _, err := w.db.Exec(stmt, args...); err != nil {
+	if _, err := w.db.ExecContext(ctx, stmt, args...); err != nil {
 		slog.Error("insert log record failed",
 			"service", r.Service, "error", err)
 		return
 	}
 
 	// Best-effort freshness update; errors here don't fail the write.
-	_, _ = w.db.Exec(
+	_, _ = w.db.ExecContext(ctx,
 		`UPDATE partitions SET last_ingest_at = ?, row_count = row_count + 1 WHERE day = ?`,
 		time.Now().Unix(), dayKey(t),
 	)
@@ -260,7 +271,7 @@ func (w *Writer) writeOne(r Record) {
 
 // ensureDay short-circuits on the cache hit, only calling
 // ensurePartition for never-before-seen days.
-func (w *Writer) ensureDay(t time.Time) error {
+func (w *Writer) ensureDay(ctx context.Context, t time.Time) error {
 	key := dayKey(t)
 	w.mu.Lock()
 	_, seen := w.ensured[key]
@@ -268,7 +279,7 @@ func (w *Writer) ensureDay(t time.Time) error {
 	if seen {
 		return nil
 	}
-	if err := ensurePartition(w.db, t); err != nil {
+	if err := ensurePartition(ctx, w.db, t); err != nil {
 		return err
 	}
 	w.mu.Lock()

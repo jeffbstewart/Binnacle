@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -50,7 +51,10 @@ type QueryResult struct {
 // per-day partition tables. At 7-day retention this tops out at 7
 // sub-queries, each hitting the (service, severity, time_ns DESC)
 // index.
-func Query(db *sql.DB, f QueryFilter) (*QueryResult, error) {
+//
+// ctx bounds the whole read, including the wait for the store's single
+// connection; callers on request paths should give it a deadline.
+func Query(ctx context.Context, db *sql.DB, f QueryFilter) (*QueryResult, error) {
 	limit := f.Limit
 	if limit <= 0 {
 		limit = 100
@@ -59,7 +63,7 @@ func Query(db *sql.DB, f QueryFilter) (*QueryResult, error) {
 		limit = 1000
 	}
 
-	days, err := ListPartitionDays(db)
+	days, err := ListPartitionDays(ctx, db)
 	if err != nil {
 		return nil, fmt.Errorf("list partitions: %w", err)
 	}
@@ -99,7 +103,7 @@ func Query(db *sql.DB, f QueryFilter) (*QueryResult, error) {
 	fullSQL := strings.Join(parts, " UNION ALL ") +
 		fmt.Sprintf(" ORDER BY time_ns DESC LIMIT %d", limit)
 
-	rows, err := db.Query(fullSQL, multiArgs...)
+	rows, err := db.QueryContext(ctx, fullSQL, multiArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("execute query: %w", err)
 	}

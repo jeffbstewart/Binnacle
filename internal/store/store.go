@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -17,8 +18,9 @@ import (
 // query reads, and applies any pending schema migrations.
 //
 // The dataDir is created if missing. The caller owns the returned DB
-// and is responsible for Close() at shutdown.
-func Open(dataDir string) (*sql.DB, error) {
+// and is responsible for Close() at shutdown. ctx bounds the initial
+// ping and the migrations; it is not retained.
+func Open(ctx context.Context, dataDir string) (*sql.DB, error) {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create data dir %s: %w", dataDir, err)
 	}
@@ -49,12 +51,12 @@ func Open(dataDir string) (*sql.DB, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
-	if err := db.Ping(); err != nil {
+	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping sqlite at %s: %w", dbPath, err)
 	}
 
-	if err := Migrate(db); err != nil {
+	if err := Migrate(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply migrations: %w", err)
 	}

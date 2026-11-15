@@ -88,8 +88,12 @@ func (h *ViewerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		{"7d", now.Add(-7 * 24 * time.Hour)},
 	}
 
+	// One DB budget shared by both reads below.
+	ctx, cancel := dbContext(r)
+	defer cancel()
+
 	// Populate service dropdown.
-	if svcs, err := store.ListDistinctServices(h.DB); err == nil {
+	if svcs, err := store.ListDistinctServices(ctx, h.DB); err == nil {
 		data.Services = svcs
 	}
 
@@ -98,7 +102,7 @@ func (h *ViewerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		data.Error = err.Error()
 	} else {
-		result, err := store.Query(h.DB, filter)
+		result, err := store.Query(ctx, h.DB, filter)
 		if err != nil {
 			data.Error = err.Error()
 		} else {
@@ -216,9 +220,9 @@ var viewerFuncs = template.FuncMap{
 	"shortTime": shortTime,
 	"fullTime":  fullTime,
 	"truncate":  truncate,
-	"list":    func(args ...string) []string { return args },
-	"qs":      queryString,
-	"rfc3339": rfc3339,
+	"list":      func(args ...string) []string { return args },
+	"qs":        queryString,
+	"rfc3339":   rfc3339,
 }
 
 var viewerTmpl = template.Must(template.New("viewer").Funcs(viewerFuncs).Parse(viewerHTML))

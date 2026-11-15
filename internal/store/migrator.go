@@ -15,6 +15,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"errors"
@@ -48,12 +49,12 @@ var migrationFilenameRegex = regexp.MustCompile(`^V(\d+)__(.+)\.sql$`)
 // creates the schema_migrations table on first run and skips migrations
 // already recorded there. Safe to call repeatedly — no-op when
 // everything is current.
-func Migrate(db *sql.DB) error {
-	if err := ensureMigrationsTable(db); err != nil {
+func Migrate(ctx context.Context, db *sql.DB) error {
+	if err := ensureMigrationsTable(ctx, db); err != nil {
 		return fmt.Errorf("ensure schema_migrations: %w", err)
 	}
 
-	applied, err := appliedVersions(db)
+	applied, err := appliedVersions(ctx, db)
 	if err != nil {
 		return fmt.Errorf("read applied versions: %w", err)
 	}
@@ -67,7 +68,7 @@ func Migrate(db *sql.DB) error {
 		if _, done := applied[m.Version]; done {
 			continue
 		}
-		if err := applyMigration(db, m); err != nil {
+		if err := applyMigration(ctx, db, m); err != nil {
 			return fmt.Errorf("apply V%03d (%s): %w", m.Version, m.Description, err)
 		}
 		slog.Info("applied migration", "version", m.Version, "description", m.Description)
@@ -75,8 +76,8 @@ func Migrate(db *sql.DB) error {
 	return nil
 }
 
-func ensureMigrationsTable(db *sql.DB) error {
-	_, err := db.Exec(`
+func ensureMigrationsTable(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version     INTEGER PRIMARY KEY,
 			description TEXT    NOT NULL,
@@ -86,8 +87,8 @@ func ensureMigrationsTable(db *sql.DB) error {
 	return err
 }
 
-func appliedVersions(db *sql.DB) (map[int]struct{}, error) {
-	rows, err := db.Query(`SELECT version FROM schema_migrations`)
+func appliedVersions(ctx context.Context, db *sql.DB) (map[int]struct{}, error) {
+	rows, err := db.QueryContext(ctx, `SELECT version FROM schema_migrations`)
 	if err != nil {
 		return nil, err
 	}
@@ -152,18 +153,18 @@ func loadMigrations() ([]Migration, error) {
 // records it in schema_migrations. If the migration's SQL or the
 // tracker update fails, the transaction is rolled back and the DB
 // returns to its pre-migration state.
-func applyMigration(db *sql.DB, m Migration) error {
-	tx, err := db.Begin()
+func applyMigration(ctx context.Context, db *sql.DB, m Migration) error {
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	// Rollback is a no-op after a successful Commit.
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.Exec(m.SQL); err != nil {
+	if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
 		return fmt.Errorf("execute migration SQL: %w", err)
 	}
-	if _, err := tx.Exec(
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO schema_migrations (version, description, applied_at) VALUES (?, ?, ?)`,
 		m.Version, m.Description, time.Now().Unix(),
 	); err != nil {
