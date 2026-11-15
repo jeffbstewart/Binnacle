@@ -65,6 +65,13 @@ type Writer struct {
 	mu      sync.Mutex
 	ensured map[string]struct{} // day key → known
 
+	// indexed caches (day, service) pairs already recorded in
+	// partition_services: day key → service set. Touched only by the
+	// Run goroutine, so it needs no lock. Days more than two days
+	// older than the newest seen are pruned; MaxRecordAge keeps
+	// writes from reaching them anyway.
+	indexed map[string]map[string]struct{}
+
 	done chan struct{}
 
 	// Stats counters are atomic.Uint64 so Stats() can be read from
@@ -87,6 +94,7 @@ func NewWriter(db *sql.DB, queueSize int) *Writer {
 		db:      db,
 		queue:   make(chan Record, queueSize),
 		ensured: make(map[string]struct{}),
+		indexed: make(map[string]map[string]struct{}),
 		done:    make(chan struct{}),
 	}
 }
@@ -266,7 +274,39 @@ func (w *Writer) writeOne(r Record) {
 		time.Now().Unix(), dayKey(t),
 	)
 
+	w.indexService(ctx, t, r.Service)
+
 	w.written.Add(1)
+}
+
+// indexService records (day, service) in partition_services the first
+// time this writer sees the pair. Best-effort: on failure the pair is
+// left uncached, so the next record for it retries.
+func (w *Writer) indexService(ctx context.Context, t time.Time, service string) {
+	key := dayKey(t)
+	set, ok := w.indexed[key]
+	if ok {
+		if _, seen := set[service]; seen {
+			return
+		}
+	}
+	if _, err := w.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO partition_services (day, service) VALUES (?, ?)`,
+		key, service); err != nil {
+		slog.Warn("index service failed", "day", key, "service", service, "error", err)
+		return
+	}
+	if !ok {
+		set = make(map[string]struct{})
+		w.indexed[key] = set
+		stale := dayKey(t.Add(-48 * time.Hour))
+		for d := range w.indexed {
+			if d < stale {
+				delete(w.indexed, d)
+			}
+		}
+	}
+	set[service] = struct{}{}
 }
 
 // ensureDay short-circuits on the cache hit, only calling

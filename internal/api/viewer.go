@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"fmt"
 	"html/template"
 	"net/http"
 	"time"
@@ -31,6 +32,8 @@ type viewerData struct {
 	FilterSeverity  string
 	Since           time.Time
 	Until           time.Time
+	SinceAll        bool   // since=all: explicitly no lower bound
+	DefaultWindow   string // non-empty when DefaultViewerWindow applied, e.g. "1h"
 	FilterSearch    string
 	FilterLimit     string
 	RefreshInterval time.Duration // zero = off
@@ -60,8 +63,14 @@ func (h *ViewerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	q := r.URL.Query()
+	sinceAll := q.Get("since") == SinceAll
+	if sinceAll {
+		q.Del("since")
+	}
+
 	var since, until time.Time
-	if s := r.URL.Query().Get("since"); s != "" {
+	if s := q.Get("since"); s != "" {
 		since, _ = time.Parse(time.RFC3339, s)
 	}
 	if s := r.URL.Query().Get("until"); s != "" {
@@ -73,6 +82,7 @@ func (h *ViewerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		FilterSeverity:  r.URL.Query().Get("severity"),
 		Since:           since,
 		Until:           until,
+		SinceAll:        sinceAll,
 		FilterSearch:    r.URL.Query().Get("q"),
 		FilterLimit:     r.URL.Query().Get("limit"),
 		RefreshInterval: refreshInterval,
@@ -98,7 +108,14 @@ func (h *ViewerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse filter + run query.
-	filter, err := parseQueryFilter(r)
+	filter, err := parseQueryFilter(q)
+	if err == nil && !sinceAll && filter.Since.IsZero() && filter.Until.IsZero() {
+		// No time bound given: show the recent window rather than
+		// sorting every retained partition. The default is not pinned
+		// into data.Since, so links and auto-refresh keep sliding.
+		filter.Since = time.Now().Add(-DefaultViewerWindow)
+		data.DefaultWindow = formatWindow(DefaultViewerWindow)
+	}
 	if err != nil {
 		data.Error = err.Error()
 	} else {
@@ -115,6 +132,28 @@ func (h *ViewerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err := viewerTmpl.Execute(w, data); err != nil {
 		http.Error(w, "template: "+err.Error(), http.StatusInternalServerError)
 	}
+}
+
+// DefaultViewerWindow is how far back the viewer looks when the URL
+// gives neither since nor until. Unbounded, the query must sort every
+// retained partition; the recent window keeps the common "what just
+// happened" page fast. since=all opts out.
+const DefaultViewerWindow = time.Hour
+
+// SinceAll is the since value that asks the viewer for every retained
+// record instead of DefaultViewerWindow.
+const SinceAll = "all"
+
+// formatWindow renders a whole-unit duration compactly ("1h", "15m")
+// for the default-window chip.
+func formatWindow(d time.Duration) string {
+	switch {
+	case d%time.Hour == 0:
+		return fmt.Sprintf("%dh", d/time.Hour)
+	case d%time.Minute == 0:
+		return fmt.Sprintf("%dm", d/time.Minute)
+	}
+	return d.String()
 }
 
 // sevClass maps severity to a CSS class for the left-border color band.
@@ -165,7 +204,9 @@ func queryString(d viewerData, extraKey, extraVal string) string {
 	if d.FilterSeverity != "" {
 		params["severity"] = d.FilterSeverity
 	}
-	if !d.Since.IsZero() {
+	if d.SinceAll {
+		params["since"] = SinceAll
+	} else if !d.Since.IsZero() {
 		params["since"] = d.Since.Format(time.RFC3339)
 	}
 	if !d.Until.IsZero() {
@@ -335,7 +376,7 @@ const viewerHTML = `<!DOCTYPE html>
     {{end}}
   </select>
   <input type="text" name="q" placeholder="Search messages..." value="{{.FilterSearch}}">
-  <input type="hidden" name="since" value="{{rfc3339 .Since}}">
+  <input type="hidden" name="since" value="{{if .SinceAll}}all{{else}}{{rfc3339 .Since}}{{end}}">
   <input type="hidden" name="until" value="{{rfc3339 .Until}}">
   <button type="submit">Search</button>
   <a href="/logs" style="font-size:12px; margin-left:4px;">Clear</a>
@@ -347,7 +388,7 @@ const viewerHTML = `<!DOCTYPE html>
   {{range .Presets}}
   <a href="/logs{{qs $ "since" (rfc3339 .Since)}}">{{.Label}}</a>
   {{end}}
-  <a href="/logs{{qs $ "since" ""}}">All</a>
+  <a href="/logs{{qs $ "since" "all"}}">All</a>
   <span style="margin-left:16px">Refresh:</span>
   <a href="/logs{{qs $ "refresh" "5s"}}">5s</a>
   <a href="/logs{{qs $ "refresh" "30s"}}">30s</a>
@@ -360,6 +401,8 @@ const viewerHTML = `<!DOCTYPE html>
   {{if .FilterService}}<span class="chip">service: {{.FilterService}} <a class="x" href="/logs{{qs $ "service" ""}}">x</a></span>{{end}}
   {{if .FilterSeverity}}<span class="chip">severity: {{.FilterSeverity}}+ <a class="x" href="/logs{{qs $ "severity" ""}}">x</a></span>{{end}}
   {{if not .Since.IsZero}}<span class="chip">since: {{shortTime .Since}} <a class="x" href="/logs{{qs $ "since" ""}}">x</a></span>{{end}}
+  {{if .DefaultWindow}}<span class="chip">last {{.DefaultWindow}} (default) <a class="x" href="/logs{{qs $ "since" "all"}}">x</a></span>{{end}}
+  {{if .SinceAll}}<span class="chip">all retained <a class="x" href="/logs{{qs $ "since" ""}}">x</a></span>{{end}}
   {{if .RefreshInterval}}<span class="chip">refresh: {{.RefreshInterval}} <a class="x" href="/logs{{qs $ "refresh" ""}}">x</a></span>{{end}}
 </div>
 

@@ -3,39 +3,16 @@ package store
 import (
 	"context"
 	"database/sql"
-	"fmt"
-	"time"
 )
 
 // ListDistinctServices returns the unique service names across all
-// partitions, sorted alphabetically. Used to populate the UI filter
-// dropdown. The query is fast — one UNION per day with DISTINCT, at
-// most 7 subqueries at default retention.
+// retained partitions, sorted alphabetically, for the UI filter
+// dropdown. It reads the small partition_services index (V002), not
+// the log tables. Partitions from before V002 contribute once the
+// maintenance loop has backfilled them.
 func ListDistinctServices(ctx context.Context, db *sql.DB) ([]string, error) {
-	days, err := ListPartitionDays(ctx, db)
-	if err != nil {
-		return nil, err
-	}
-	if len(days) == 0 {
-		return nil, nil
-	}
-
-	var parts []string
-	for _, day := range days {
-		t, err := time.Parse("2006-01-02", day)
-		if err != nil {
-			continue
-		}
-		parts = append(parts, fmt.Sprintf(
-			`SELECT DISTINCT service FROM %s`, PartitionName(t),
-		))
-	}
-
-	query := `SELECT DISTINCT service FROM (` +
-		joinStrings(parts, " UNION ALL ") +
-		`) ORDER BY service`
-
-	rows, err := db.QueryContext(ctx, query)
+	rows, err := db.QueryContext(ctx,
+		`SELECT DISTINCT service FROM partition_services ORDER BY service`)
 	if err != nil {
 		return nil, err
 	}
@@ -50,15 +27,4 @@ func ListDistinctServices(ctx context.Context, db *sql.DB) ([]string, error) {
 		services = append(services, s)
 	}
 	return services, rows.Err()
-}
-
-func joinStrings(parts []string, sep string) string {
-	if len(parts) == 0 {
-		return ""
-	}
-	result := parts[0]
-	for _, p := range parts[1:] {
-		result += sep + p
-	}
-	return result
 }

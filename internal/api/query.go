@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -62,7 +63,7 @@ func (h *QueryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filter, err := parseQueryFilter(r)
+	filter, err := parseQueryFilter(r.URL.Query())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -91,8 +92,7 @@ func (h *QueryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // parseQueryFilter converts URL query parameters into a QueryFilter.
 // Returns a user-friendly error for bad input (time not RFC3339,
 // limit not an int, etc.) so the handler can surface it with 400.
-func parseQueryFilter(r *http.Request) (store.QueryFilter, error) {
-	q := r.URL.Query()
+func parseQueryFilter(q url.Values) (store.QueryFilter, error) {
 
 	filter := store.QueryFilter{
 		Services: q["service"],
