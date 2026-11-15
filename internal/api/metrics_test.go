@@ -106,6 +106,8 @@ func TestMetricsHandler_EmitsAllExpectedMetrics(t *testing.T) {
 		"binnacle_converter_dropped_trace_ids_total",
 		"binnacle_converter_dropped_span_ids_total",
 		"binnacle_partitions",
+		"binnacle_db_size_bytes",
+		"binnacle_db_free_bytes",
 		"binnacle_build_info",
 	}
 	for _, m := range wantMetrics {

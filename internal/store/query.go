@@ -17,6 +17,7 @@ type QueryFilter struct {
 	Since       time.Time // time_ns >= Since.UnixNano(); zero = open-start
 	Until       time.Time // time_ns <  Until.UnixNano(); zero = open-end
 	Limit       int       // default 100; hard-capped at 1000
+	Search      string    // full-text terms, all must match message; empty = no filter
 }
 
 // QueriedRecord is the on-the-wire shape returned by Query. Distinct
@@ -72,8 +73,6 @@ func Query(ctx context.Context, db *sql.DB, f QueryFilter) (*QueryResult, error)
 		return &QueryResult{Records: []QueriedRecord{}}, nil
 	}
 
-	where, args := buildWhereClause(f)
-
 	// The read-side column list is derived from the same columnSpec
 	// source of truth as the write side, so they cannot drift.
 	readCols := recordColumnList
@@ -87,12 +86,13 @@ func Query(ctx context.Context, db *sql.DB, f QueryFilter) (*QueryResult, error)
 	// part of a UNION ALL, but allows it inside a parenthesised
 	// sub-query.
 	var parts []string
-	multiArgs := make([]any, 0, len(args)*len(days))
+	var multiArgs []any
 	for _, day := range days {
 		t, err := time.Parse("2006-01-02", day)
 		if err != nil {
 			continue
 		}
+		where, args := buildWhereClause(f, t)
 		parts = append(parts, fmt.Sprintf(
 			`SELECT * FROM (SELECT %s FROM %s %s ORDER BY time_ns DESC LIMIT %d)`,
 			readCols, PartitionName(t), where, limit,
@@ -127,9 +127,11 @@ func Query(ctx context.Context, db *sql.DB, f QueryFilter) (*QueryResult, error)
 	}, nil
 }
 
-// buildWhereClause produces the per-partition WHERE clause and its
-// positional args. Returns "" + nil when there are no filters.
-func buildWhereClause(f QueryFilter) (string, []any) {
+// buildWhereClause produces the WHERE clause and positional args for
+// day's partition. It is per-day because a search matches against
+// that day's FTS5 shadow table. Returns "" + nil when there are no
+// filters.
+func buildWhereClause(f QueryFilter, day time.Time) (string, []any) {
 	var clauses []string
 	var args []any
 
@@ -152,10 +154,30 @@ func buildWhereClause(f QueryFilter) (string, []any) {
 		clauses = append(clauses, "time_ns < ?")
 		args = append(args, f.Until.UnixNano())
 	}
+	if match := ftsMatchExpr(f.Search); match != "" {
+		fts := ftsPartitionName(day)
+		clauses = append(clauses,
+			"id IN (SELECT rowid FROM "+fts+" WHERE "+fts+" MATCH ?)")
+		args = append(args, match)
+	}
 	if len(clauses) == 0 {
 		return "", nil
 	}
 	return "WHERE " + strings.Join(clauses, " AND "), args
+}
+
+// ftsMatchExpr turns free-form search text into an FTS5 MATCH
+// expression: each whitespace-separated term becomes a quoted string
+// (embedded quotes doubled), and the terms are implicitly ANDed. Quoting
+// means user input can never be a syntax error or reach FTS5 operators
+// (NEAR, OR, column filters, ...). A term the tokenizer splits, such as
+// "foo-bar", matches as the phrase "foo bar". Returns "" for blank input.
+func ftsMatchExpr(search string) string {
+	terms := strings.Fields(search)
+	for i, t := range terms {
+		terms[i] = `"` + strings.ReplaceAll(t, `"`, `""`) + `"`
+	}
+	return strings.Join(terms, " ")
 }
 
 // filterDaysByRange drops partition days entirely outside [since,

@@ -108,6 +108,13 @@ func (h *MetricsHandler) render(ctx context.Context, w io.Writer) {
 			"Current number of daily partition tables.", uint64(partitions))
 	}
 
+	if space, err := store.ReadDBSpace(ctx, h.DB); err == nil {
+		gauge(w, "binnacle_db_size_bytes",
+			"SQLite database file size (page_count * page_size).", uint64(space.Bytes()))
+		gauge(w, "binnacle_db_free_bytes",
+			"Bytes on the SQLite freelist: allocated but unused, reclaimable by VACUUM.", uint64(space.FreeBytes()))
+	}
+
 	// build_info is a Prometheus convention: always-1 gauge with the
 	// interesting facts on labels. Lets dashboards pivot by version
 	// without cardinality concerns.

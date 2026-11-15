@@ -173,4 +173,25 @@ func maintainOnce(ctx context.Context, db *sql.DB, retention time.Duration) {
 		slog.Info("service index backfilled", "partitions", n,
 			"elapsed", time.Since(start).String())
 	}
+
+	maybeVacuum(ctx, db)
+}
+
+// maybeVacuum runs VacuumIfFragmented with the package thresholds and
+// logs the outcome. Runs after retention so the space it reclaims
+// includes that pass's drops.
+func maybeVacuum(ctx context.Context, db *sql.DB) {
+	vctx, cancel := context.WithTimeout(ctx, VacuumTimeout)
+	defer cancel()
+	start := time.Now()
+	ran, before, after, err := VacuumIfFragmented(vctx, db, VacuumFreeFraction, VacuumMinFreeBytes)
+	switch {
+	case err != nil:
+		slog.Error("vacuum failed", "ran", ran, "size_bytes", before.Bytes(),
+			"free_bytes", before.FreeBytes(), "elapsed", time.Since(start).String(), "error", err)
+	case ran:
+		slog.Info("vacuum complete", "size_before_bytes", before.Bytes(),
+			"size_after_bytes", after.Bytes(), "reclaimed_bytes", before.Bytes()-after.Bytes(),
+			"elapsed", time.Since(start).String())
+	}
 }
