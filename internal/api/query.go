@@ -91,13 +91,27 @@ func (h *QueryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// nonEmpty returns vals without empty strings, or nil if none remain.
+func nonEmpty(vals []string) []string {
+	var out []string
+	for _, v := range vals {
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // parseQueryFilter converts URL query parameters into a QueryFilter.
 // Returns a user-friendly error for bad input (time not RFC3339,
 // limit not an int, etc.) so the handler can surface it with 400.
 func parseQueryFilter(q url.Values) (store.QueryFilter, error) {
 
 	filter := store.QueryFilter{
-		Services: q["service"],
+		// Blank values are dropped: the viewer's form submits
+		// service= for "All services", which must not become a
+		// filter for the service named "".
+		Services: nonEmpty(q["service"]),
 		Search:   q.Get("q"),
 	}
 

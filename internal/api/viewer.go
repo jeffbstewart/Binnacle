@@ -378,19 +378,19 @@ const viewerHTML = `<!DOCTYPE html>
 
 <form method="get" action="/logs">
 <div class="filters">
-  <select name="service">
+  <select name="service" onchange="this.form.submit()">
     <option value="">All services</option>
     {{range .Services}}
     <option value="{{.}}"{{if eq . $.FilterService}} selected{{end}}>{{.}}</option>
     {{end}}
   </select>
-  <select name="severity">
+  <select name="severity" onchange="this.form.submit()">
     <option value="">All levels</option>
     {{range $_, $sev := (list "TRACE" "DEBUG" "INFO" "WARN" "ERROR" "FATAL")}}
     <option value="{{$sev}}"{{if eq $sev $.FilterSeverity}} selected{{end}}>{{$sev}}+</option>
     {{end}}
   </select>
-  <select name="limit">
+  <select name="limit" onchange="this.form.submit()">
     {{range $_, $n := (list "100" "500" "1000")}}
     <option value="{{$n}}"{{if eq $n $.LimitChoice}} selected{{end}}>{{$n}} rows</option>
     {{end}}
