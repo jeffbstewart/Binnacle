@@ -101,7 +101,7 @@ func ensurePartition(ctx context.Context, db *sql.DB, day time.Time) error {
 	}
 	now := time.Now().Unix()
 	_, err := db.ExecContext(ctx,
-		`INSERT INTO partitions (day, created_at, last_ingest_at) VALUES (?, ?, ?)
+		`INSERT INTO partitions (day, created_at, last_ingest_at, services_indexed) VALUES (?, ?, ?, 1)
 		 ON CONFLICT(day) DO NOTHING`,
 		dayKey(day), now, now,
 	)
@@ -155,6 +155,9 @@ func DropPartition(ctx context.Context, db *sql.DB, day string) error {
 	}
 	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS `+name); err != nil {
 		return fmt.Errorf("drop table %s: %w", name, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM partition_services WHERE day = ?`, day); err != nil {
+		return fmt.Errorf("delete service index %s: %w", day, err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM partitions WHERE day = ?`, day); err != nil {
 		return fmt.Errorf("delete metadata %s: %w", day, err)

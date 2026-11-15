@@ -243,12 +243,18 @@ CREATE TABLE partitions (
 Controlled by the `--retention-days N` CLI flag on the collector.
 Default: 7.
 
-Every hour, the collector:
-1. Lists partition tables older than the retention window.
+At startup and then every hour, the collector:
+1. Lists partitions whose whole UTC day is older than the retention
+   window.
 2. `DROP TABLE logs_YYYY_MM_DD` for each.
 3. Deletes the corresponding `fts_logs_YYYY_MM_DD` table.
-4. Removes the `partitions` row.
-5. `VACUUM` once a week off-peak so the file doesn't balloon.
+4. Removes the `partitions` and `partition_services` rows.
+5. *(Not yet implemented)* `VACUUM` once a week off-peak so the file
+   doesn't balloon. Until then, dropped pages go on SQLite's freelist
+   and are reused by new partitions; the file never shrinks.
+
+Each pass logs a `retention sweep complete` line to stderr with the
+number of partitions dropped.
 
 Dropping a partition is essentially free — no row-by-row delete, no
 index rebuild.

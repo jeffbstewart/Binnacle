@@ -47,12 +47,16 @@ import (
 // large table on the NAS's disks.
 const storeOpenTimeout = 2 * time.Minute
 
+// maintenanceInterval is how often the retention sweep runs after the
+// startup pass.
+const maintenanceInterval = time.Hour
+
 // version is set at build time via -ldflags "-X main.version=...".
 var version = "dev"
 
 type config struct {
 	dataDir       string
-	retentionDays int
+	retention     time.Duration
 	otlpGRPCPort  int
 	otlpHTTPPort  int
 	queryPort     int
@@ -71,7 +75,9 @@ func parseFlags() (config, error) {
 
 	var c config
 	fs.StringVar(&c.dataDir, "data-dir", "/data", "directory for the SQLite log store")
-	fs.IntVar(&c.retentionDays, "retention-days", 7, "how many days of logs to keep before partition drop")
+	// Days on the command line (the documented interface); held as a
+	// time.Duration everywhere past parsing.
+	retentionDays := fs.Int("retention-days", 7, "how many days of logs to keep before partition drop")
 	fs.IntVar(&c.otlpGRPCPort, "otlp-grpc-port", 4317, "port for OTLP gRPC ingest")
 	fs.IntVar(&c.otlpHTTPPort, "otlp-http-port", 4318, "port for OTLP HTTP ingest")
 	fs.IntVar(&c.queryPort, "query-port", 8088, "port for the query API and UI")
@@ -96,9 +102,10 @@ func parseFlags() (config, error) {
 		return c, err
 	}
 
-	if c.retentionDays < 1 {
-		return c, fmt.Errorf("--retention-days must be >= 1, got %d", c.retentionDays)
+	if *retentionDays < 1 {
+		return c, fmt.Errorf("--retention-days must be >= 1, got %d", *retentionDays)
 	}
+	c.retention = time.Duration(*retentionDays) * 24 * time.Hour
 	return c, nil
 }
 
@@ -156,7 +163,7 @@ func main() {
 	slog.Info("binnacle starting",
 		"version", version,
 		"data_dir", cfg.dataDir,
-		"retention_days", cfg.retentionDays,
+		"retention", cfg.retention.String(),
 		"otlp_grpc_port", cfg.otlpGRPCPort,
 		"otlp_http_port", cfg.otlpHTTPPort,
 		"query_port", cfg.queryPort)
@@ -193,6 +200,11 @@ func main() {
 	go writer.Run(writerCtx)
 
 	selflog.Init(writer, version)
+
+	// Retention + service-index backfill: once now (in the
+	// background, so a large first sweep after an upgrade doesn't
+	// delay the listeners), then every maintenanceInterval.
+	go store.Maintain(sigCtx, db, cfg.retention, maintenanceInterval)
 
 	otlp := &ingest.OTLPHandler{Writer: writer, Converter: ingest.NewConverter()}
 	query := &api.QueryHandler{DB: db}

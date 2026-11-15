@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -335,5 +336,50 @@ func TestViewerHandler_RendersWhenConnectionBusy(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 with inline error", rec.Code)
+	}
+}
+
+// TestViewerHandler_DefaultWindow checks that with no since/until the
+// viewer shows only DefaultViewerWindow, and since=all shows the rest.
+func TestViewerHandler_DefaultWindow(t *testing.T) {
+	db, w := setupDB(t)
+	now := time.Now()
+	for _, r := range []struct {
+		msg string
+		at  time.Time
+	}{
+		{"recent-record", now},
+		{"older-record", now.Add(-2 * DefaultViewerWindow)},
+	} {
+		if err := w.Submit(store.Record{TimeNs: r.at.UnixNano(), IngestNs: now.UnixNano(),
+			Severity: store.SeverityInfo, Service: "svc", Instance: "h", Message: r.msg}); err != nil {
+			t.Fatalf("Submit: %v", err)
+		}
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for w.Stats().Written < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	get := func(target string) string {
+		rec := httptest.NewRecorder()
+		(&ViewerHandler{DB: db}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status %d", target, rec.Code)
+		}
+		return rec.Body.String()
+	}
+
+	body := get(ViewerPath)
+	if !strings.Contains(body, "recent-record") || strings.Contains(body, "older-record") {
+		t.Fatalf("default view should show only the recent record")
+	}
+	if !strings.Contains(body, "(default)") {
+		t.Fatalf("default view should show the default-window chip")
+	}
+
+	body = get(ViewerPath + "?since=all")
+	if !strings.Contains(body, "recent-record") || !strings.Contains(body, "older-record") {
+		t.Fatalf("since=all should show both records")
 	}
 }
