@@ -51,6 +51,8 @@ const defaultLimit = 100
 //	since=<RFC3339>        time_ns >= Since.UnixNano()
 //	until=<RFC3339>        time_ns <  Until.UnixNano()
 //	limit=<int>            default 100, hard-capped at 1000 in store
+//	q=<text>               full-text search on message; every
+//	                       whitespace-separated term must match
 type QueryHandler struct {
 	DB *sql.DB
 }
@@ -96,6 +98,7 @@ func parseQueryFilter(q url.Values) (store.QueryFilter, error) {
 
 	filter := store.QueryFilter{
 		Services: q["service"],
+		Search:   q.Get("q"),
 	}
 
 	if s := q.Get("severity"); s != "" {

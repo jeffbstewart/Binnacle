@@ -4,9 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -381,5 +385,89 @@ func TestViewerHandler_DefaultWindow(t *testing.T) {
 	body = get(ViewerPath + "?since=all")
 	if !strings.Contains(body, "recent-record") || !strings.Contains(body, "older-record") {
 		t.Fatalf("since=all should show both records")
+	}
+}
+
+// TestViewerHandler_PagesOlder walks the "Older" links and checks the
+// pages are disjoint, ordered, and end without an Older link.
+func TestViewerHandler_PagesOlder(t *testing.T) {
+	db, w := setupDB(t)
+	now := time.Now()
+	const n = 5
+	for i := range n {
+		if err := w.Submit(store.Record{TimeNs: now.Add(-time.Duration(i) * time.Minute).UnixNano(),
+			IngestNs: now.UnixNano(), Severity: store.SeverityInfo, Service: "svc", Instance: "h",
+			Message: fmt.Sprintf("rec-%d", i)}); err != nil {
+			t.Fatalf("Submit: %v", err)
+		}
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for w.Stats().Written < n && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	older := regexp.MustCompile(`<a href="(/logs\?[^"]*)">Older`)
+	recRe := regexp.MustCompile(`rec-\d`)
+	var seen []string
+	target := ViewerPath + "?since=all&limit=2"
+	for page := 0; target != ""; page++ {
+		if page > n {
+			t.Fatal("too many pages")
+		}
+		rec := httptest.NewRecorder()
+		(&ViewerHandler{DB: db}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		body := rec.Body.String()
+		// Each message renders twice (row + detail panel).
+		seen = append(seen, slices.Compact(recRe.FindAllString(body, -1))...)
+		target = ""
+		if m := older.FindStringSubmatch(body); m != nil {
+			target = html.UnescapeString(m[1])
+		}
+	}
+	want := []string{"rec-0", "rec-1", "rec-2", "rec-3", "rec-4"}
+	if !slices.Equal(seen, want) {
+		t.Fatalf("paged through %v, want %v", seen, want)
+	}
+}
+
+// TestQueryHandler_Search checks q= reaches the store's FTS filter.
+func TestQueryHandler_Search(t *testing.T) {
+	db, w := setupDB(t)
+	now := time.Now()
+	for i, m := range []string{"disk full", "network down"} {
+		if err := w.Submit(store.Record{TimeNs: now.UnixNano() + int64(i), IngestNs: now.UnixNano(),
+			Severity: store.SeverityInfo, Service: "svc", Instance: "h", Message: m}); err != nil {
+			t.Fatalf("Submit: %v", err)
+		}
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for w.Stats().Written < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	rec := httptest.NewRecorder()
+	(&QueryHandler{DB: db}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, QueryPath+"?q=disk", nil))
+	var res store.QueryResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body.String())
+	}
+	if res.CountReturned != 1 || res.Records[0].Message != "disk full" {
+		t.Fatalf("q=disk returned %+v", res.Records)
+	}
+}
+
+func TestQueryString_EscapesValues(t *testing.T) {
+	until := time.Date(2026, 11, 15, 19, 0, 0, 123, time.FixedZone("x", -5*3600))
+	got := queryString(viewerData{Until: until, FilterSearch: "a&b c"}, "", "")
+	v, err := url.ParseQuery(strings.TrimPrefix(got, "?"))
+	if err != nil {
+		t.Fatalf("ParseQuery(%q): %v", got, err)
+	}
+	parsed, err := time.Parse(time.RFC3339, v.Get("until"))
+	if err != nil || !parsed.Equal(until) {
+		t.Fatalf("until round-trip: got %v (%v), want %v", parsed, err, until)
+	}
+	if v.Get("q") != "a&b c" {
+		t.Fatalf("q round-trip: got %q", v.Get("q"))
 	}
 }

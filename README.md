@@ -249,9 +249,15 @@ At startup and then every hour, the collector:
 2. `DROP TABLE logs_YYYY_MM_DD` for each.
 3. Deletes the corresponding `fts_logs_YYYY_MM_DD` table.
 4. Removes the `partitions` and `partition_services` rows.
-5. *(Not yet implemented)* `VACUUM` once a week off-peak so the file
-   doesn't balloon. Until then, dropped pages go on SQLite's freelist
-   and are reused by new partitions; the file never shrinks.
+5. `VACUUM`s the database if at least 25% of it (and at least 64 MiB)
+   is free pages, then truncates the WAL. Day-to-day retention frees
+   about one partition per day and new partitions reuse that space, so
+   this normally fires only after a large one-off release such as the
+   first sweep on a long-unswept store. VACUUM holds the single SQLite
+   connection while it runs, so ingest and reads wait for it.
+
+`/metrics` exposes `binnacle_db_size_bytes` and
+`binnacle_db_free_bytes` to watch this.
 
 Each pass logs a `retention sweep complete` line to stderr with the
 number of partitions dropped.

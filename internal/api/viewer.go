@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/jeffbstewart/Binnacle/internal/store"
@@ -34,6 +36,8 @@ type viewerData struct {
 	Until           time.Time
 	SinceAll        bool   // since=all: explicitly no lower bound
 	DefaultWindow   string // non-empty when DefaultViewerWindow applied, e.g. "1h"
+	LimitChoice     string // selected row limit for the dropdown
+	OlderUntil      string // until= value for the "Older" page link; empty when no more rows
 	FilterSearch    string
 	FilterLimit     string
 	RefreshInterval time.Duration // zero = off
@@ -85,7 +89,11 @@ func (h *ViewerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		SinceAll:        sinceAll,
 		FilterSearch:    r.URL.Query().Get("q"),
 		FilterLimit:     r.URL.Query().Get("limit"),
+		LimitChoice:     r.URL.Query().Get("limit"),
 		RefreshInterval: refreshInterval,
+	}
+	if data.LimitChoice == "" {
+		data.LimitChoice = strconv.Itoa(defaultLimit)
 	}
 
 	// Time-range presets.
@@ -125,6 +133,11 @@ func (h *ViewerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			data.Records = result.Records
 			data.Count = result.CountReturned
+			// A full page means older rows may exist; offer the next
+			// page as everything strictly before the oldest row shown.
+			if n := len(result.Records); n > 0 && n >= effectiveLimit(filter.Limit) {
+				data.OlderUntil = rfc3339Nano(result.Records[n-1].Time)
+			}
 		}
 	}
 
@@ -132,6 +145,18 @@ func (h *ViewerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err := viewerTmpl.Execute(w, data); err != nil {
 		http.Error(w, "template: "+err.Error(), http.StatusInternalServerError)
 	}
+}
+
+// effectiveLimit mirrors store.Query's limit defaulting and cap so the
+// viewer can tell whether a result filled the page.
+func effectiveLimit(n int) int {
+	switch {
+	case n <= 0:
+		return defaultLimit
+	case n > 1000:
+		return 1000
+	}
+	return n
 }
 
 // DefaultViewerWindow is how far back the viewer looks when the URL
@@ -194,59 +219,48 @@ func truncate(s string, n int) string {
 }
 
 // queryString builds a URL query string from the current filters,
-// optionally overriding or adding the refresh parameter. Used by the
-// template to generate links that preserve the active filter state.
+// overriding extraKey with extraVal (an empty extraVal removes it).
+// Used by the template to generate links that preserve the active
+// filter state. Values are URL-escaped, so a timestamp's "+hh:mm"
+// offset or a search term survives the round trip.
 func queryString(d viewerData, extraKey, extraVal string) string {
-	params := make(map[string]string)
-	if d.FilterService != "" {
-		params["service"] = d.FilterService
-	}
-	if d.FilterSeverity != "" {
-		params["severity"] = d.FilterSeverity
-	}
-	if d.SinceAll {
-		params["since"] = SinceAll
-	} else if !d.Since.IsZero() {
-		params["since"] = d.Since.Format(time.RFC3339)
-	}
-	if !d.Until.IsZero() {
-		params["until"] = d.Until.Format(time.RFC3339)
-	}
-	if d.FilterSearch != "" {
-		params["q"] = d.FilterSearch
-	}
-	if d.FilterLimit != "" {
-		params["limit"] = d.FilterLimit
-	}
-	if d.RefreshInterval > 0 {
-		params["refresh"] = d.RefreshInterval.String()
-	}
-	if extraKey != "" {
-		if extraVal != "" {
-			params[extraKey] = extraVal
-		} else {
-			delete(params, extraKey)
+	params := url.Values{}
+	set := func(k, v string) {
+		if v != "" {
+			params.Set(k, v)
 		}
 	}
-	var parts []string
-	for k, v := range params {
-		parts = append(parts, k+"="+v)
+	set("service", d.FilterService)
+	set("severity", d.FilterSeverity)
+	if d.SinceAll {
+		set("since", SinceAll)
+	} else {
+		set("since", rfc3339(d.Since))
 	}
-	if len(parts) == 0 {
+	set("until", rfc3339Nano(d.Until))
+	set("q", d.FilterSearch)
+	set("limit", d.FilterLimit)
+	if d.RefreshInterval > 0 {
+		set("refresh", d.RefreshInterval.String())
+	}
+	if extraKey != "" {
+		params.Del(extraKey)
+		set(extraKey, extraVal)
+	}
+	if len(params) == 0 {
 		return ""
 	}
-	return "?" + joinStringsAPI(parts, "&")
+	return "?" + params.Encode()
 }
 
-func joinStringsAPI(parts []string, sep string) string {
-	if len(parts) == 0 {
+// rfc3339Nano formats t in UTC with full precision for paging
+// cursors: "Older" sets until to the oldest row shown, and second
+// precision would skip or repeat rows sharing that second.
+func rfc3339Nano(t time.Time) string {
+	if t.IsZero() {
 		return ""
 	}
-	result := parts[0]
-	for _, p := range parts[1:] {
-		result += sep + p
-	}
-	return result
+	return t.UTC().Format(time.RFC3339Nano)
 }
 
 func rfc3339(t time.Time) string {
@@ -257,13 +271,14 @@ func rfc3339(t time.Time) string {
 }
 
 var viewerFuncs = template.FuncMap{
-	"sevClass":  sevClass,
-	"shortTime": shortTime,
-	"fullTime":  fullTime,
-	"truncate":  truncate,
-	"list":      func(args ...string) []string { return args },
-	"qs":        queryString,
-	"rfc3339":   rfc3339,
+	"sevClass":    sevClass,
+	"shortTime":   shortTime,
+	"fullTime":    fullTime,
+	"truncate":    truncate,
+	"list":        func(args ...string) []string { return args },
+	"qs":          queryString,
+	"rfc3339":     rfc3339,
+	"rfc3339Nano": rfc3339Nano,
 }
 
 var viewerTmpl = template.Must(template.New("viewer").Funcs(viewerFuncs).Parse(viewerHTML))
@@ -375,9 +390,14 @@ const viewerHTML = `<!DOCTYPE html>
     <option value="{{$sev}}"{{if eq $sev $.FilterSeverity}} selected{{end}}>{{$sev}}+</option>
     {{end}}
   </select>
-  <input type="text" name="q" placeholder="Search messages..." value="{{.FilterSearch}}">
+  <select name="limit">
+    {{range $_, $n := (list "100" "500" "1000")}}
+    <option value="{{$n}}"{{if eq $n $.LimitChoice}} selected{{end}}>{{$n}} rows</option>
+    {{end}}
+  </select>
+  <input type="text" name="q" placeholder="Search messages (all words)..." value="{{.FilterSearch}}">
   <input type="hidden" name="since" value="{{if .SinceAll}}all{{else}}{{rfc3339 .Since}}{{end}}">
-  <input type="hidden" name="until" value="{{rfc3339 .Until}}">
+  <input type="hidden" name="until" value="{{rfc3339Nano .Until}}">
   <button type="submit">Search</button>
   <a href="/logs" style="font-size:12px; margin-left:4px;">Clear</a>
 </div>
@@ -402,13 +422,15 @@ const viewerHTML = `<!DOCTYPE html>
   {{if .FilterSeverity}}<span class="chip">severity: {{.FilterSeverity}}+ <a class="x" href="/logs{{qs $ "severity" ""}}">x</a></span>{{end}}
   {{if not .Since.IsZero}}<span class="chip">since: {{shortTime .Since}} <a class="x" href="/logs{{qs $ "since" ""}}">x</a></span>{{end}}
   {{if .DefaultWindow}}<span class="chip">last {{.DefaultWindow}} (default) <a class="x" href="/logs{{qs $ "since" "all"}}">x</a></span>{{end}}
+  {{if not .Until.IsZero}}<span class="chip">before: {{fullTime .Until}} <a class="x" href="/logs{{qs $ "until" ""}}">x</a></span>{{end}}
+  {{if .FilterSearch}}<span class="chip">search: {{.FilterSearch}} <a class="x" href="/logs{{qs $ "q" ""}}">x</a></span>{{end}}
   {{if .SinceAll}}<span class="chip">all retained <a class="x" href="/logs{{qs $ "since" ""}}">x</a></span>{{end}}
   {{if .RefreshInterval}}<span class="chip">refresh: {{.RefreshInterval}} <a class="x" href="/logs{{qs $ "refresh" ""}}">x</a></span>{{end}}
 </div>
 
 {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
 
-<div class="status">{{.Count}} records</div>
+<div class="status">{{.Count}} records{{if not .Until.IsZero}} &middot; <a href="/logs{{qs $ "until" ""}}">&laquo; Newest</a>{{end}}{{if .OlderUntil}} &middot; <a href="/logs{{qs $ "until" .OlderUntil}}">Older &raquo;</a>{{end}}</div>
 
 <table>
 <thead>
