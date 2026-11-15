@@ -471,3 +471,40 @@ func TestQueryString_EscapesValues(t *testing.T) {
 		t.Fatalf("q round-trip: got %q", v.Get("q"))
 	}
 }
+
+// TestViewerHandler_FormSubmitWithBlanks reproduces the viewer's own
+// form submission with every field left at its default ("All
+// services", "All levels", empty search) and checks records still
+// come back, both in the viewer and the JSON API.
+func TestViewerHandler_FormSubmitWithBlanks(t *testing.T) {
+	db, w := setupDB(t)
+	seed(t, w, "svc", store.SeverityInfo, 3)
+
+	form := "?service=&severity=&limit=500&q=&since=&until="
+	rec := httptest.NewRecorder()
+	(&ViewerHandler{DB: db}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, ViewerPath+form, nil))
+	if !strings.Contains(rec.Body.String(), `<div class="status">3 records`) {
+		t.Fatalf("viewer form submit with blanks did not return the 3 records")
+	}
+
+	rec = httptest.NewRecorder()
+	(&QueryHandler{DB: db}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, QueryPath+"?service=", nil))
+	var res store.QueryResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil || res.CountReturned != 3 {
+		t.Fatalf("API service= returned %d records (err %v), want 3", res.CountReturned, err)
+	}
+}
+
+// TestViewerHandler_SelectsAutoSubmit checks each filter dropdown
+// submits on change, so picking a row limit takes effect without
+// pressing Search.
+func TestViewerHandler_SelectsAutoSubmit(t *testing.T) {
+	db, _ := setupDB(t)
+	rec := httptest.NewRecorder()
+	(&ViewerHandler{DB: db}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, ViewerPath, nil))
+	for _, name := range []string{"service", "severity", "limit"} {
+		if !strings.Contains(rec.Body.String(), `<select name="`+name+`" onchange="this.form.submit()">`) {
+			t.Errorf("select %q does not auto-submit", name)
+		}
+	}
+}
